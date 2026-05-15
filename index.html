@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AEC延时估计算法调研报告</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.8;
+            color: #333;
+            background: #f8f9fa;
+        }
+        .container { max-width: 960px; margin: 0 auto; padding: 40px 20px; }
+        header {
+            background: linear-gradient(135deg, #1a237e, #283593);
+            color: white;
+            padding: 60px 20px;
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        header h1 { font-size: 2.2em; margin-bottom: 10px; }
+        header p { font-size: 1.1em; opacity: 0.9; }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        h2 {
+            color: #1a237e;
+            font-size: 1.6em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e8eaf6;
+        }
+        h3 { color: #283593; font-size: 1.2em; margin: 20px 0 10px; }
+        h4 { color: #3949ab; margin: 15px 0 8px; }
+</style>
+</head>
+<body>
+<header>
+    <h1>AEC 延时估计算法调研报告</h1>
+    <p>声学回声消除中的时延估计技术分析与对比</p>
+    <p style="margin-top:10px;font-size:0.9em;opacity:0.7;">2026年5月</p>
+</header>
+<div class="container">
+
+<!-- 目录 -->
+<div class="card">
+<h2>目录</h2>
+<ol style="padding-left:20px;">
+    <li><a href="#overview" style="color:#1a237e;text-decoration:none;">概述</a></li>
+    <li><a href="#webrtc" style="color:#1a237e;text-decoration:none;">WebRTC AEC 二值谱延时估计算法（本项目使用）</a></li>
+    <li><a href="#gcc-phat" style="color:#1a237e;text-decoration:none;">GCC-PHAT 广义互相关延时估计</a></li>
+    <li><a href="#nlms" style="color:#1a237e;text-decoration:none;">基于自适应滤波器的延时估计（NLMS/RLS）</a></li>
+    <li><a href="#neural" style="color:#1a237e;text-decoration:none;">基于深度学习的延时估计</a></li>
+    <li><a href="#bfm" style="color:#1a237e;text-decoration:none;">二值化特征匹配（BFM）改进方法</a></li>
+    <li><a href="#comparison" style="color:#1a237e;text-decoration:none;">算法综合对比</a></li>
+    <li><a href="#conclusion" style="color:#1a237e;text-decoration:none;">结论与建议</a></li>
+    <li><a href="#references" style="color:#1a237e;text-decoration:none;">参考文献</a></li>
+</ol>
+</div>
+
+<!-- 概述 -->
+<div class="card" id="overview">
+<h2>1. 概述</h2>
+<p>在声学回声消除（AEC）系统中，<strong>延时估计（Time Delay Estimation, TDE）</strong>是关键的前处理模块。其核心任务是估计远端参考信号经过扬声器-房间-麦克风路径后到达近端麦克风的传播延迟。准确的延时估计能够：</p>
+<ul style="padding-left:20px;margin-top:10px;">
+    <li>对齐远端参考信号与近端信号，减少自适应滤波器所需的长度</li>
+    <li>加速自适应滤波器的收敛速度</li>
+    <li>降低计算复杂度和内存占用</li>
+    <li>提高回声消除的整体性能</li>
+</ul>
+<p style="margin-top:15px;">本报告首先分析本项目（VQE/AEC_webrtc）中使用的 WebRTC 二值谱延时估计算法原理，然后调研业内主流的延时估计方案，进行系统性对比分析。</p>
+</div>
+
+<!-- WebRTC 算法详解 -->
+<div class="card" id="webrtc">
+<h2>2. WebRTC AEC 二值谱延时估计算法（本项目使用）</h2>
+
+<h3>2.1 算法概述</h3>
+<p>本项目使用的延时估计模块源自 WebRTC 的 AEC 实现，核心思想是将频谱转换为二值（Binary）表示，通过比较远端和近端的二值谱序列来估计延时。该方法以极低的计算复杂度实现了鲁棒的延时跟踪。</p>
+
+<h3>2.2 算法流程</h3>
+
+<h4>Step 1: 频谱二值化</h4>
+<p>对远端和近端的频谱信号，选取第17~48个频带（共32个bin，恰好可用一个 uint32_t 表示），将每个频带的能量与其均值阈值比较：</p>
+<ul style="padding-left:20px;margin:10px 0;">
+    <li>若当前频带能量 > 均值阈值 → 对应bit置1</li>
+    <li>否则 → 对应bit置0</li>
+</ul>
+<p>均值阈值通过递归平均更新：<code>threshold += (spectrum - threshold) × scale</code>，scale = 1/64 或 1/256。</p>
+
+<h4>Step 2: 二值谱历史缓存</h4>
+<p>远端二值谱按时间顺序存入环形历史缓冲区（history_size 个帧），形成一个"二值矩阵"。每次新帧到来时，将最新的二值谱插入缓冲区头部。</p>
+
+<h4>Step 3: 汉明距离计算</h4>
+<p>将当前近端二值谱与远端历史缓冲区中每一帧进行 XOR 运算，再统计结果中1的个数（BitCount），得到汉明距离。汉明距离越小，表示两帧的频谱模式越相似。</p>
+<pre style="background:#f5f5f5;padding:15px;border-radius:4px;overflow-x:auto;margin:10px 0;"><code>bit_counts[i] = BitCount(binary_near ^ binary_far_history[i])</code></pre>
+
+<h4>Step 4: 平滑与候选延时选择</h4>
+<p>对 bit_counts 进行指数平滑得到 mean_bit_counts，平滑因子与远端信号强度相关（远端越强，平滑越快）。在 mean_bit_counts 中找到最小值对应的索引即为候选延时（candidate_delay）。</p>
+
+<h4>Step 5: 延时验证</h4>
+<p>采用双重验证机制确保延时估计的可靠性：</p>
+<ul style="padding-left:20px;margin:10px 0;">
+    <li><strong>瞬时验证</strong>：要求谷深（最大值-最小值）超过阈值，且最小值低于自适应概率阈值</li>
+    <li><strong>直方图验证</strong>：维护候选延时的历史直方图，要求候选延时在直方图中累积足够的权重，且连续命中次数超过阈值（kMinRequiredHits=10）</li>
+    <li><strong>鲁棒组合</strong>：首次估计时两者取OR；后续需要两者同时满足（AND），或直方图值显著超过上次延时的直方图值</li>
+</ul>
+
+<h3>2.3 关键设计特点</h3>
+<ul style="padding-left:20px;margin:10px 0;">
+    <li><strong>Lookahead 机制</strong>：支持非因果前瞻，可检测近端信号先于远端到达的情况</li>
+    <li><strong>Soft Reset</strong>：延时变化时可平滑过渡，避免突变</li>
+    <li><strong>自适应阈值</strong>：minimum_probability 和 last_delay_probability 随时间自适应调整</li>
+    <li><strong>非因果保护</strong>：当候选延时小于当前延时时，降低切换门限，快速响应</li>
+</ul>
+
+<h3>2.4 优缺点分析</h3>
+<table style="width:100%;border-collapse:collapse;margin:15px 0;">
+<tr style="background:#e8eaf6;"><th style="padding:10px;border:1px solid #ddd;text-align:left;">优点</th><th style="padding:10px;border:1px solid #ddd;text-align:left;">缺点</th></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">极低计算复杂度（仅位运算）</td><td style="padding:10px;border:1px solid #ddd;">延时分辨率受限于帧长（通常4-8ms）</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">内存占用小（每帧仅32bit）</td><td style="padding:10px;border:1px solid #ddd;">对低信噪比环境敏感</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">鲁棒的双重验证机制</td><td style="padding:10px;border:1px solid #ddd;">收敛速度相对较慢（需积累直方图）</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">适合嵌入式实时系统</td><td style="padding:10px;border:1px solid #ddd;">频带选择固定，不够灵活</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">对延时突变有保护机制</td><td style="padding:10px;border:1px solid #ddd;">二值化丢失了幅度信息</td></tr>
+</table>
+</div>
+
+<!-- GCC-PHAT -->
+<div class="card" id="gcc-phat">
+<h2>3. GCC-PHAT 广义互相关延时估计</h2>
+
+<h3>3.1 算法原理</h3>
+<p>广义互相关（Generalized Cross-Correlation）是经典的时延估计方法。GCC-PHAT（Phase Transform）是其最常用的变体，通过对互功率谱进行相位加权来锐化相关峰。</p>
+
+<p>基本流程：</p>
+<ol style="padding-left:20px;margin:10px 0;">
+    <li>对远端信号 x(t) 和近端信号 y(t) 分别做 FFT，得到 X(f) 和 Y(f)</li>
+    <li>计算互功率谱：G<sub>xy</sub>(f) = X(f) · Y*(f)</li>
+    <li>应用 PHAT 加权：W(f) = 1 / |G<sub>xy</sub>(f)|</li>
+    <li>计算加权互相关：R(τ) = IFFT{ G<sub>xy</sub>(f) · W(f) }</li>
+    <li>找到 R(τ) 的峰值位置即为延时估计：τ̂ = argmax R(τ)</li>
+</ol>
+
+<h3>3.2 PHAT 加权的意义</h3>
+<p>PHAT 加权将互功率谱归一化为单位幅度，仅保留相位信息。这使得相关函数的峰值更加尖锐，提高了延时估计的精度。在混响环境中，PHAT 加权能有效抑制多径反射的影响。</p>
+
+<h3>3.3 优缺点分析</h3>
+<table style="width:100%;border-collapse:collapse;margin:15px 0;">
+<tr style="background:#e8eaf6;"><th style="padding:10px;border:1px solid #ddd;text-align:left;">优点</th><th style="padding:10px;border:1px solid #ddd;text-align:left;">缺点</th></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">延时分辨率高（采样点级别）</td><td style="padding:10px;border:1px solid #ddd;">计算复杂度较高（需FFT/IFFT）</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">理论基础成熟，实现简单</td><td style="padding:10px;border:1px solid #ddd;">对噪声敏感，低SNR下性能下降</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">PHAT加权抗混响能力强</td><td style="padding:10px;border:1px solid #ddd;">需要较长的分析窗口才能获得可靠估计</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">无需训练数据</td><td style="padding:10px;border:1px solid #ddd;">对非平稳信号（如语音）跟踪能力有限</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">适用于宽带信号</td><td style="padding:10px;border:1px solid #ddd;">多径环境下可能出现虚假峰值</td></tr>
+</table>
+
+<h3>3.4 典型应用场景</h3>
+<p>GCC-PHAT 广泛应用于声源定位、麦克风阵列波束形成等场景。在 AEC 中常作为粗延时估计的预处理步骤，配合自适应滤波器使用。</p>
+</div>
+
+<!-- NLMS/RLS -->
+<div class="card" id="nlms">
+<h2>4. 基于自适应滤波器的延时估计（NLMS/RLS）</h2>
+
+<h3>4.1 算法原理</h3>
+<p>利用自适应滤波器（如 NLMS 或 RLS）对回声路径进行建模，通过分析滤波器系数的峰值位置来估计延时。</p>
+
+<h4>NLMS 方法</h4>
+<ol style="padding-left:20px;margin:10px 0;">
+    <li>使用远端信号作为输入，近端信号作为期望输出</li>
+    <li>自适应滤波器不断更新系数以最小化误差</li>
+    <li>收敛后，滤波器系数的最大值位置对应回声路径的主延时</li>
+    <li>系数更新公式：w(n+1) = w(n) + μ · e(n) · x(n) / (x<sup>T</sup>(n)x(n) + δ)</li>
+</ol>
+
+<h4>RLS 方法</h4>
+<p>递归最小二乘法通过最小化加权误差平方和来更新滤波器系数，收敛速度比 NLMS 快，但计算复杂度为 O(N²)。</p>
+
+<h3>4.2 优缺点分析</h3>
+<table style="width:100%;border-collapse:collapse;margin:15px 0;">
+<tr style="background:#e8eaf6;"><th style="padding:10px;border:1px solid #ddd;text-align:left;">优点</th><th style="padding:10px;border:1px solid #ddd;text-align:left;">缺点</th></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">延时估计与回声消除一体化</td><td style="padding:10px;border:1px solid #ddd;">需要较长的滤波器才能覆盖大延时</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">能同时获得回声路径信息</td><td style="padding:10px;border:1px solid #ddd;">收敛速度慢（NLMS），或计算量大（RLS）</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">对延时变化有自然的跟踪能力</td><td style="padding:10px;border:1px solid #ddd;">双讲情况下容易发散</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">精度高（采样点级别）</td><td style="padding:10px;border:1px solid #ddd;">大延时场景内存和计算开销巨大</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">成熟的理论框架</td><td style="padding:10px;border:1px solid #ddd;">步长选择需要权衡收敛速度和稳态误差</td></tr>
+</table>
+
+<h3>4.3 实际应用</h3>
+<p>在实际 AEC 系统中，通常不单独使用自适应滤波器做延时估计（开销太大），而是先用轻量级方法（如二值谱匹配或 GCC）做粗估计，再用短滤波器做精细对齐。SpeexDSP 的 AEC 实现中就采用了类似策略。</p>
+</div>
+
+<!-- 深度学习方法 -->
+<div class="card" id="neural">
+<h2>5. 基于深度学习的延时估计</h2>
+
+<h3>5.1 算法原理</h3>
+<p>近年来，深度学习方法被引入延时估计领域，主要有以下几种范式：</p>
+
+<h4>5.1.1 分类网络方法</h4>
+<p>将延时估计建模为分类问题：将可能的延时范围离散化为若干个类别，使用神经网络输出每个延时类别的概率，选择概率最大的类别作为估计结果。</p>
+<p>典型方案（2025, arxiv 2502.06098）：使用自适应滤波器组提取多尺度特征，将滤波器权重能量拼接后送入分类网络，输出延时概率分布。</p>
+
+<h4>5.1.2 端到端方法</h4>
+<p>直接将远端和近端信号输入神经网络，跳过传统的延时估计和线性 AEC 步骤，由网络隐式学习延时对齐和回声消除。代表工作如 E2E-AEC（2026, arxiv 2601.16774）。</p>
+
+<h4>5.1.3 Neural Kalman Filter</h4>
+<p>结合卡尔曼滤波框架和深度学习：用 DNN 估计非线性失真的远端信号、状态转移因子等参数，增强传统卡尔曼滤波器的非线性建模能力。</p>
+
+<h3>5.2 优缺点分析</h3>
+<table style="width:100%;border-collapse:collapse;margin:15px 0;">
+<tr style="background:#e8eaf6;"><th style="padding:10px;border:1px solid #ddd;text-align:left;">优点</th><th style="padding:10px;border:1px solid #ddd;text-align:left;">缺点</th></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">能处理非线性失真和复杂声学环境</td><td style="padding:10px;border:1px solid #ddd;">计算复杂度高，需要 GPU/NPU 加速</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">双讲鲁棒性强</td><td style="padding:10px;border:1px solid #ddd;">需要大量训练数据</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">可与回声消除联合优化</td><td style="padding:10px;border:1px solid #ddd;">模型泛化性依赖训练数据覆盖度</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">对噪声和混响有较好的鲁棒性</td><td style="padding:10px;border:1px solid #ddd;">延迟较大（帧级处理）</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">可端到端优化整个系统</td><td style="padding:10px;border:1px solid #ddd;">嵌入式部署困难，功耗高</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">—</td><td style="padding:10px;border:1px solid #ddd;">可解释性差，调试困难</td></tr>
+</table>
+
+<h3>5.3 发展趋势</h3>
+<p>当前趋势是将深度学习与传统 DSP 方法结合：用轻量级传统方法做粗延时估计，用神经网络做残余回声抑制和非线性补偿。纯端到端方案在学术上表现优异，但在嵌入式设备上的部署仍面临挑战。</p>
+</div>
+
+<!-- BFM -->
+<div class="card" id="bfm">
+<h2>6. 二值化特征匹配（BFM）改进方法</h2>
+
+<h3>6.1 算法原理</h3>
+<p>BFM（Binarized Feature Matching）是 2024 年 Interspeech 上提出的改进方案，在 WebRTC 二值谱方法的基础上进行了系统性优化。</p>
+
+<p>核心改进：</p>
+<ul style="padding-left:20px;margin:10px 0;">
+    <li><strong>多样化特征提取</strong>：不仅使用频谱幅度，还引入频谱差分、子带能量比等多种特征进行二值化</li>
+    <li><strong>自适应频带选择</strong>：根据信号特性动态选择参与匹配的频带</li>
+    <li><strong>改进的匹配度量</strong>：在汉明距离基础上引入加权匹配</li>
+    <li><strong>多分辨率搜索</strong>：先粗搜索再精搜索，提高效率</li>
+</ul>
+
+<h3>6.2 优缺点分析</h3>
+<table style="width:100%;border-collapse:collapse;margin:15px 0;">
+<tr style="background:#e8eaf6;"><th style="padding:10px;border:1px solid #ddd;text-align:left;">优点</th><th style="padding:10px;border:1px solid #ddd;text-align:left;">缺点</th></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">保持低复杂度的同时提升精度</td><td style="padding:10px;border:1px solid #ddd;">相比原始 WebRTC 方法略增复杂度</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">特征多样性提高鲁棒性</td><td style="padding:10px;border:1px solid #ddd;">参数调优更复杂</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">兼容嵌入式平台</td><td style="padding:10px;border:1px solid #ddd;">学术方案，工程验证不如 WebRTC 充分</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">性能优于 GCC-PHAT 和原始 WebRTC</td><td style="padding:10px;border:1px solid #ddd;">对极端低 SNR 场景改善有限</td></tr>
+</table>
+</div>
+
+<!-- 综合对比 -->
+<div class="card" id="comparison">
+<h2>7. 算法综合对比</h2>
+
+<table style="width:100%;border-collapse:collapse;margin:15px 0;font-size:0.9em;">
+<tr style="background:#1a237e;color:white;">
+    <th style="padding:12px 8px;border:1px solid #ddd;">算法</th>
+    <th style="padding:12px 8px;border:1px solid #ddd;">计算复杂度</th>
+    <th style="padding:12px 8px;border:1px solid #ddd;">延时精度</th>
+    <th style="padding:12px 8px;border:1px solid #ddd;">收敛速度</th>
+    <th style="padding:12px 8px;border:1px solid #ddd;">噪声鲁棒性</th>
+    <th style="padding:12px 8px;border:1px solid #ddd;">双讲鲁棒性</th>
+    <th style="padding:12px 8px;border:1px solid #ddd;">嵌入式适用性</th>
+</tr>
+<tr>
+    <td style="padding:10px 8px;border:1px solid #ddd;font-weight:bold;">WebRTC 二值谱</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★☆☆☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">帧级</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">中等</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★★</td>
+</tr>
+<tr style="background:#f5f5f5;">
+    <td style="padding:10px 8px;border:1px solid #ddd;font-weight:bold;">GCC-PHAT</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">采样点级</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">快</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★☆☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★☆☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★☆☆</td>
+</tr>
+<tr>
+    <td style="padding:10px 8px;border:1px solid #ddd;font-weight:bold;">NLMS 自适应滤波</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">采样点级</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">慢</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★☆☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★☆☆☆</td>
+</tr>
+<tr style="background:#f5f5f5;">
+    <td style="padding:10px 8px;border:1px solid #ddd;font-weight:bold;">深度学习方法</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★★</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">帧级</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">快（推理）</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★★</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★★</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★☆☆☆☆</td>
+</tr>
+<tr>
+    <td style="padding:10px 8px;border:1px solid #ddd;font-weight:bold;">BFM 改进方法</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★☆☆☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">帧级</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">中等</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★☆</td>
+    <td style="padding:10px 8px;border:1px solid #ddd;text-align:center;">★★★★☆</td>
+</tr>
+</table>
+
+<p style="margin-top:15px;font-size:0.85em;color:#666;">注：★越多表示该指标越高/越好。计算复杂度★多表示开销大。</p>
+
+<h3>7.1 适用场景总结</h3>
+<table style="width:100%;border-collapse:collapse;margin:15px 0;">
+<tr style="background:#e8eaf6;"><th style="padding:10px;border:1px solid #ddd;text-align:left;">场景</th><th style="padding:10px;border:1px solid #ddd;text-align:left;">推荐算法</th><th style="padding:10px;border:1px solid #ddd;text-align:left;">理由</th></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">嵌入式/IoT设备</td><td style="padding:10px;border:1px solid #ddd;">WebRTC 二值谱 / BFM</td><td style="padding:10px;border:1px solid #ddd;">极低计算和内存开销</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">手机/平板</td><td style="padding:10px;border:1px solid #ddd;">WebRTC 二值谱 + 短滤波器精调</td><td style="padding:10px;border:1px solid #ddd;">平衡精度和功耗</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">PC/服务器端</td><td style="padding:10px;border:1px solid #ddd;">GCC-PHAT + NLMS</td><td style="padding:10px;border:1px solid #ddd;">计算资源充足，追求高精度</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">云端会议系统</td><td style="padding:10px;border:1px solid #ddd;">深度学习 + 传统方法混合</td><td style="padding:10px;border:1px solid #ddd;">可利用GPU，追求极致效果</td></tr>
+<tr><td style="padding:10px;border:1px solid #ddd;">麦克风阵列/声源定位</td><td style="padding:10px;border:1px solid #ddd;">GCC-PHAT</td><td style="padding:10px;border:1px solid #ddd;">需要采样点级精度</td></tr>
+</table>
+</div>
+
+<!-- 结论 -->
+<div class="card" id="conclusion">
+<h2>8. 结论与建议</h2>
+
+<h3>8.1 当前项目评估</h3>
+<p>本项目使用的 WebRTC 二值谱延时估计算法是一个经过大规模验证的成熟方案，在嵌入式场景下是最优选择之一。其核心优势在于：</p>
+<ul style="padding-left:20px;margin:10px 0;">
+    <li>计算复杂度极低，仅需位运算和简单比较</li>
+    <li>内存占用小，每帧仅需 32bit 存储</li>
+    <li>双重验证机制保证了估计的可靠性</li>
+</ul>
+
+<h3>8.2 改进建议</h3>
+<ol style="padding-left:20px;margin:10px 0;">
+    <li><strong>短期优化</strong>：调整二值化阈值的更新速率（当前 kScale=1/256），在延时突变场景下可适当加快</li>
+    <li><strong>中期改进</strong>：参考 BFM 方法，引入多特征二值化（如频谱差分），提升低 SNR 下的鲁棒性</li>
+    <li><strong>长期方向</strong>：在有 NPU 的平台上，可考虑轻量级神经网络辅助延时估计，与传统方法互补</li>
+</ol>
+
+<h3>8.3 关键结论</h3>
+<p>延时估计没有"银弹"方案，需要根据目标平台的计算资源、延时要求和声学环境综合选择。对于本项目面向的 RTC 嵌入式场景，WebRTC 二值谱方法仍然是最佳平衡点，但可通过 BFM 思路进行针对性增强。</p>
+</div>
+
+<!-- 参考文献 -->
+<div class="card" id="references">
+<h2>9. 参考文献</h2>
+<ol style="padding-left:20px;font-size:0.9em;">
+    <li>WebRTC Project, "delay_estimator.c / delay_estimator_wrapper.c", <a href="https://chromium.googlesource.com/external/webrtc/stable/webrtc/+/refs/heads/master/modules/audio_processing/utility/delay_estimator.c" target="_blank">Chromium Source</a></li>
+    <li>Gao et al., "Low Complexity Echo Delay Estimator Based on Binarized Feature Matching", Interspeech 2024, <a href="https://www.isca-archive.org/interspeech_2024/gao24b_interspeech.html" target="_blank">ISCA Archive</a></li>
+    <li>C. Knapp, G. Carter, "The generalized correlation method for estimation of time delay", IEEE Trans. ASSP, 1976</li>
+    <li>Wang et al., "Optimization Algorithm for Delay Estimation Based on SVD and Improved GCC-PHAT Weighting", Sensors 2022, <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC9571281/" target="_blank">PMC</a></li>
+    <li>arxiv 2502.06098, "An adaptive filter bank based neural network approach for time delay estimation", 2025, <a href="https://arxiv.org/html/2502.06098v1" target="_blank">arXiv</a></li>
+    <li>arxiv 2601.16774, "Implementing an End-to-End Neural Network Learning Approach for AEC", 2026, <a href="https://arxiv.org/html/2601.16774v1" target="_blank">arXiv</a></li>
+    <li>arxiv 2301.12363, "A Learnable Kalman Filter for Acoustic Echo Cancellation", <a href="https://arxiv.org/html/2301.12363v3" target="_blank">arXiv</a></li>
+    <li>Switchboard Audio, "How WebRTC AEC3 Works", <a href="https://switchboard.audio/hub/how-webrtc-aec3-works" target="_blank">Link</a></li>
+</ol>
+</div>
+
+</div><!-- end container -->
+
+<footer style="text-align:center;padding:30px;color:#666;font-size:0.85em;border-top:1px solid #eee;margin-top:20px;">
+    <p>AEC 延时估计算法调研报告 | 2026年5月</p>
+</footer>
+</body>
+</html>

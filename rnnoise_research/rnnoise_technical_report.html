@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RNNoise 技术原理调研报告</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.8; color: #333; background: #f8f9fa; }
+        .container { max-width: 960px; margin: 0 auto; padding: 40px 20px; }
+        header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 60px 20px; text-align: center; margin-bottom: 40px; }
+        header h1 { font-size: 2.2em; margin-bottom: 10px; }
+        header p { font-size: 1.1em; opacity: 0.9; }
+        .card { background: white; border-radius: 8px; padding: 30px; margin-bottom: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        h2 { color: #1a237e; font-size: 1.6em; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #e8eaf6; }
+        h3 { color: #283593; font-size: 1.2em; margin: 20px 0 10px; }
+        h4 { color: #3949ab; margin: 15px 0 8px; }
+        pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; margin: 10px 0; font-size: 0.9em; }
+        code { font-family: 'Consolas', 'Monaco', monospace; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th { background: #e8eaf6; padding: 10px; border: 1px solid #ddd; text-align: left; }
+        td { padding: 10px; border: 1px solid #ddd; }
+        ul, ol { padding-left: 20px; margin: 10px 0; }
+        .highlight { background: #fff3e0; padding: 15px; border-left: 4px solid #ff9800; margin: 15px 0; border-radius: 4px; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>RNNoise 技术原理调研报告</h1>
+    <p>A Hybrid DSP/Deep Learning Approach to Real-Time Full-Band Speech Enhancement</p>
+    <p style="margin-top:10px;font-size:0.9em;opacity:0.7;">基于论文 arXiv:1709.08243 (Jean-Marc Valin, 2018) | 2026年5月</p>
+</header>
+<div class="container">
+
+<div class="card">
+<h2>目录</h2>
+<ol>
+    <li><a href="#overview" style="color:#1a237e;text-decoration:none;">概述与设计思想</a></li>
+    <li><a href="#flow" style="color:#1a237e;text-decoration:none;">整体信号处理流程</a></li>
+    <li><a href="#bands" style="color:#1a237e;text-decoration:none;">频带划分与增益机制</a></li>
+    <li><a href="#network" style="color:#1a237e;text-decoration:none;">神经网络架构</a></li>
+    <li><a href="#pitch" style="color:#1a237e;text-decoration:none;">Pitch 滤波（梳状滤波器）详细原理</a></li>
+    <li><a href="#features" style="color:#1a237e;text-decoration:none;">特征工程</a></li>
+    <li><a href="#training" style="color:#1a237e;text-decoration:none;">训练策略</a></li>
+    <li><a href="#optimization" style="color:#1a237e;text-decoration:none;">推理优化</a></li>
+    <li><a href="#references" style="color:#1a237e;text-decoration:none;">参考资料</a></li>
+</ol>
+</div>
+
+<div class="card" id="overview">
+<h2>1. 概述与设计思想</h2>
+<p>RNNoise 是由 Xiph.org 和 Mozilla 联合开发的实时语音降噪库。其核心创新在于采用 <strong>DSP + 深度学习混合架构</strong>：保留传统信号处理框架（FFT/IFFT、窗函数、频带划分、Pitch 滤波），仅用 RNN 替代最难调参的噪声估计和增益计算部分。</p>
+<h3>1.1 设计目标</h3>
+<ul>
+    <li>极低计算复杂度（树莓派 3 上 7x 实时，x86 上 60x 实时）</li>
+    <li>极小模型体积（85KB，8-bit 量化权重）</li>
+    <li>10ms 帧延迟，适合实时通信（WebRTC）</li>
+    <li>无音乐噪声伪影</li>
+</ul>
+<h3>1.2 与传统方法和端到端方法的对比</h3>
+<table>
+<tr><th>特性</th><th>RNNoise</th><th>端到端 DNN</th><th>传统 DSP (Speexdsp)</th></tr>
+<tr><td>模型大小</td><td>85KB~340KB</td><td>数十 MB</td><td>无模型</td></tr>
+<tr><td>计算量</td><td>极低</td><td>需要 GPU</td><td>极低</td></tr>
+<tr><td>音质</td><td>好</td><td>最好</td><td>一般</td></tr>
+<tr><td>音乐噪声</td><td>无</td><td>可能有</td><td>常见</td></tr>
+<tr><td>调参难度</td><td>低（训练即可）</td><td>低</td><td>极高（50%科学50%艺术）</td></tr>
+<tr><td>延迟</td><td>10ms</td><td>通常更高</td><td>10ms</td></tr>
+</table>
+</div>
+
+<div class="card" id="flow">
+<h2>2. 整体信号处理流程</h2>
+<pre><code>输入音频帧 (10ms, 160点@16kHz)
+    |
+    v
+[高通滤波] 去除直流偏移
+    |
+    v
+[加窗 + FFT] 得到频谱 X(k)
+    |
+    v
+[特征提取] 38维特征 (频带能量倒谱 + pitch特征 + 差分)
+    |
+    v
+[RNN 推理] 输出: 频带增益 g[i] + VAD 概率
+    |
+    v
+[Pitch 滤波] 梳状滤波器抑制谐波间噪声
+    |
+    v
+[应用频带增益] X(k) *= gf(k)
+    |
+    v
+[IFFT + 重叠相加] 输出降噪音频</code></pre>
+</div>
+
+<div class="card" id="bands">
+<h2>3. 频带划分与增益机制</h2>
+<h3>3.1 Bark 尺度频带</h3>
+<p>RNNoise 不直接操作每个频谱点，而是将频谱划分为若干临界频带（类 Bark 尺度）。低频频带窄（人耳分辨率高），高频频带宽（人耳分辨率低）。16kHz 版本使用 17-18 个频带。</p>
+<h3>3.2 频带增益</h3>
+<p>网络输出每个频带的增益 g[i]（范围 [0,1]），使用 sigmoid 激活函数天然保证范围。优势：</p>
+<ol>
+    <li>输出维度极低（18 vs 161 个频谱点）</li>
+    <li>整个频带统一操作，避免音乐噪声</li>
+    <li>不可能放大噪声（增益 &lt;= 1）</li>
+</ol>
+</div>
+
+<div class="card" id="network">
+<h2>4. 神经网络架构</h2>
+<h3>4.1 网络拓扑</h3>
+<pre><code>Input Features (38维)
+       |
+       v
+[Dense] input_dense (全连接, tanh, 24/32/48 单元)
+       |
+       v
+[GRU] vad_gru ---&gt; [Dense] vad_output (sigmoid, 1维 VAD)
+       |
+       v
+  concat(input_dense, vad_gru, main_input)
+       |
+       v
+[GRU] noise_gru (relu)
+       |
+       v
+  concat(vad_gru, noise_gru, main_input)
+       |
+       v
+[GRU] denoise_gru (tanh)
+       |
+       v
+[Dense] denoise_output (sigmoid, 18维频带增益)</code></pre>
+<h3>4.2 各层与传统降噪模块的对应</h3>
+<table>
+<tr><th>网络层</th><th>传统模块</th><th>功能</th></tr>
+<tr><td>input_dense</td><td>特征预处理</td><td>降维/非线性变换</td></tr>
+<tr><td>vad_gru</td><td>VAD 检测器</td><td>判断是否有语音活动</td></tr>
+<tr><td>noise_gru</td><td>噪声谱估计</td><td>利用 VAD 估计噪声特性</td></tr>
+<tr><td>denoise_gru</td><td>维纳滤波/增益计算</td><td>综合信息计算最终增益</td></tr>
+</table>
+<h3>4.3 GRU 门控机制</h3>
+<p>GRU 相比 LSTM 参数更少，包含两个门：<strong>更新门 z</strong>（控制保留多少历史状态）和<strong>重置门 r</strong>（控制是否忽略历史）。</p>
+<pre><code>z = sigmoid(W_z * [h_{t-1}, x_t])
+r = sigmoid(W_r * [h_{t-1}, x_t])
+h_candidate = tanh(W * [r * h_{t-1}, x_t])
+h_t = (1-z) * h_{t-1} + z * h_candidate</code></pre>
+</div>
+
+<div class="card" id="pitch">
+<h2>5. Pitch 滤波（梳状滤波器）详细原理</h2>
+
+<h3>5.1 背景：为什么需要 Pitch 滤波</h3>
+<p>频带增益机制的分辨率受限于频带宽度。以 16kHz 采样率为例，一个频带可能覆盖 200-400Hz 的范围。但语音的基频（pitch）通常在 80-500Hz，其谐波间距等于基频频率。</p>
+<div class="highlight">
+<strong>问题</strong>：当基频为 200Hz 时，谐波位于 200Hz, 400Hz, 600Hz...，谐波之间（如 300Hz）主要是噪声。但频带增益无法区分同一频带内的谐波和谐波间隙——要么整个频带通过，要么整个频带衰减。<br><br>
+<strong>解决方案</strong>：使用 Pitch 滤波器（梳状滤波器）在频带增益之前，先利用语音的周期性特征抑制谐波间的噪声。
+</div>
+
+<h3>5.2 梳状滤波器的数学原理</h3>
+<h4>基本思想</h4>
+<p>语音信号具有准周期性，即 x(t) ≈ x(t - T)，其中 T 是 pitch 周期。噪声则没有这种周期性。如果我们将当前信号与 T 个采样点之前的信号做加权平均：</p>
+<pre><code>y(t) = x(t) + r * x(t - T)</code></pre>
+<p>其频率响应为：</p>
+<pre><code>H(f) = 1 + r * e^{-j2πfT}
+|H(f)|² = 1 + r² + 2r*cos(2πfT)</code></pre>
+<ul>
+    <li>当 f = k/T（谐波频率）时：cos(2πk) = 1，|H| = 1 + r（<strong>增强</strong>）</li>
+    <li>当 f = (k+0.5)/T（谐波间隙）时：cos(2π(k+0.5)) = -1，|H| = 1 - r（<strong>衰减</strong>）</li>
+</ul>
+<p>这就形成了一个<strong>梳状滤波器</strong>——在谐波频率处通过，在谐波间隙处衰减，形状像梳子的齿。</p>
+
+<h4>频域实现</h4>
+<p>RNNoise 在频域实现 pitch 滤波，更加灵活：</p>
+<pre><code>// P[i] 是 pitch 周期偏移后的频谱（即 x(t-T) 的 FFT）
+// X[i] 是当前帧频谱
+// rf[i] 是滤波强度（每个频点不同）
+
+X[i].r += rf[i] * P[i].r;
+X[i].i += rf[i] * P[i].i;</code></pre>
+<p>等价于时域的：y(t) = x(t) + r * x(t - T)</p>
+
+<h3>5.3 Pitch 周期的估计</h3>
+<p>RNNoise 使用经典的自相关 pitch 检测算法：</p>
+<ol>
+    <li><strong>下采样</strong>：将信号 2 倍下采样，减少计算量</li>
+    <li><strong>自相关搜索</strong>：在 [PITCH_MIN_PERIOD, PITCH_MAX_PERIOD] 范围内搜索最大自相关</li>
+    <li><strong>去倍频</strong>（remove_doubling）：防止 pitch 估计跳到 2 倍或 1/2 倍频率</li>
+</ol>
+<pre><code>// 16kHz 版本的 pitch 范围
+#define PITCH_MIN_PERIOD 20   // 对应 800Hz (16000/20)
+#define PITCH_MAX_PERIOD 256  // 对应 62.5Hz (16000/256)</code></pre>
+
+<h3>5.4 Pitch 相关度（Voicing Strength）</h3>
+<p>pitch 相关度 Exp[i] 衡量每个频带中信号的周期性强度：</p>
+<pre><code>// 计算当前频谱 X 和 pitch 偏移频谱 P 的归一化互相关
+compute_band_corr(Exp, X, P);
+for (i=0; i&lt;NB_BANDS; i++)
+    Exp[i] = Exp[i] / sqrt(0.001 + Ex[i] * Ep[i]);</code></pre>
+<ul>
+    <li>Exp ≈ 1：该频带高度周期性（清晰的语音谐波）</li>
+    <li>Exp ≈ 0：该频带无周期性（噪声或无声辅音）</li>
+</ul>
+
+<h3>5.5 滤波强度的自适应控制</h3>
+<p>pitch 滤波的关键是确定每个频带的滤波强度 r[i]。RNNoise 的策略：</p>
+<pre><code>for (i=0; i&lt;NB_BANDS; i++) {
+    if (Exp[i] &gt; g[i])
+        r[i] = 1;
+    else
+        r[i] = Exp[i]² * (1 - g[i]²) / (0.001 + g[i]² * (1 - Exp[i]²));
+    r[i] = sqrt(clamp(r[i], 0, 1));
+    r[i] *= sqrt(Ex[i] / (1e-8 + Ep[i]));  // 能量归一化
+}</code></pre>
+<table>
+<tr><th>条件</th><th>r[i] 值</th><th>含义</th></tr>
+<tr><td>Exp &gt; g（相关度 &gt; 增益）</td><td>1（最强）</td><td>信号周期性强且噪声大，全力滤波</td></tr>
+<tr><td>Exp 高, g 低</td><td>较大</td><td>有语音谐波但噪声也大，积极滤波</td></tr>
+<tr><td>Exp 低, g 高</td><td>较小</td><td>信号不太周期或噪声不大，轻微滤波</td></tr>
+<tr><td>Exp 低, g 低</td><td>中等</td><td>噪声大但无明显谐波，适度滤波</td></tr>
+</table>
+
+<h3>5.6 能量归一化</h3>
+<p>pitch 滤波后信号能量会改变，需要归一化回原始能量：</p>
+<pre><code>// 计算滤波后的频带能量
+compute_band_energy(newE, X);
+// 归一化因子：保持原始能量不变
+for (i=0; i&lt;NB_BANDS; i++)
+    norm[i] = sqrt(Ex[i] / (1e-8 + newE[i]));
+// 应用归一化
+interp_band_gain(normf, norm);
+for (i=0; i&lt;FREQ_SIZE; i++) {
+    X[i].r *= normf[i];
+    X[i].i *= normf[i];
+}</code></pre>
+<p>这确保 pitch 滤波只改变频谱的"形状"（抑制谐波间噪声），不改变总能量。后续的频带增益才负责控制整体衰减。</p>
+
+<h3>5.7 物理直觉</h3>
+<div class="highlight">
+想象一把梳子放在频谱上：梳齿对准语音谐波频率（通过），梳齿间隙对准噪声（衰减），梳齿间距 = 基频 = 1/pitch_period。<br><br>
+对于 200Hz 基频的男声，梳齿位于 200, 400, 600, 800... Hz，间隙在 100, 300, 500, 700... Hz。噪声均匀分布在所有频率，但语音能量集中在谐波上，所以梳状滤波能有效提升 SNR。
+</div>
+</div>
+
+<div class="card" id="features">
+<h2>6. 特征工程</h2>
+<h3>6.1 输入特征（38维，16kHz 版本）</h3>
+<table>
+<tr><th>特征</th><th>维度</th><th>计算方式</th></tr>
+<tr><td>Bark 倒谱</td><td>NB_BANDS (17/18)</td><td>log(频带能量) 的 DCT</td></tr>
+<tr><td>一阶差分</td><td>6</td><td>前 6 个倒谱系数的帧间差分</td></tr>
+<tr><td>二阶差分</td><td>6</td><td>前 6 个倒谱系数的二阶差分</td></tr>
+<tr><td>Pitch 相关度</td><td>6</td><td>各频带 pitch 互相关的 DCT</td></tr>
+<tr><td>Pitch 周期</td><td>1</td><td>归一化的基频周期</td></tr>
+<tr><td>频谱变异性</td><td>1</td><td>倒谱帧间最小距离的均值</td></tr>
+</table>
+<h3>6.2 训练标签</h3>
+<ul>
+    <li><strong>频带增益 g[i]</strong>：g = sqrt(Ey[i] / Ex[i])，即干净语音能量与带噪语音能量的比值开方</li>
+    <li><strong>VAD 标签</strong>：基于干净语音帧能量的三值软标签（1.0/0.5/0.0）</li>
+</ul>
+</div>
+
+<div class="card" id="training">
+<h2>7. 训练策略</h2>
+<h3>7.1 数据增强（C 程序自动完成）</h3>
+<ul>
+    <li>随机混合语音和噪声文件</li>
+    <li>随机 SNR（-5 ~ 15 dB）</li>
+    <li>随机低通滤波（模拟不同带宽录音）</li>
+    <li>10% 概率语音静音（纯噪声段）</li>
+    <li>10% 概率噪声静音（纯语音段）</li>
+    <li>随机 biquad 频率响应扰动</li>
+    <li>每 2821 帧切换一次随机参数</li>
+</ul>
+<h3>7.2 损失函数</h3>
+<pre><code>def mycost(y_true, y_pred):
+    return mean(mymask(y_true) * (
+        10 * (sqrt(y_pred) - sqrt(y_true))⁴  # 大误差强惩罚
+        + (sqrt(y_pred) - sqrt(y_true))²      # 基础 MSE
+        + 0.01 * binary_crossentropy(y_pred, y_true)  # 辅助项
+    ))</code></pre>
+<ul>
+    <li>sqrt 域计算：对小增益更敏感</li>
+    <li>四次方项：惩罚严重的增益错误</li>
+    <li>mymask：忽略无效标签帧</li>
+</ul>
+<h3>7.3 权重约束</h3>
+<pre><code>constraint = WeightClip(0.499)  # 所有权重限制在 [-0.499, 0.499]</code></pre>
+<p>便于 8-bit 定点量化部署。</p>
+</div>
+
+<div class="card" id="optimization">
+<h2>8. 推理时的工程优化</h2>
+<h3>8.1 增益平滑</h3>
+<pre><code>float alpha = 0.6f;
+g[i] = MAX(g[i], alpha * lastg[i]);</code></pre>
+<p>单向平滑：增益不能比上一帧的 60% 更低，避免突然衰减的"呼吸效应"。但允许快速上升（语音突然出现时不延迟）。</p>
+<h3>8.2 8-bit 量化</h3>
+<p>训练时权重约束在 [-0.5, 0.5]，推理时可用 8-bit 整数存储。原版模型 85KB（8-bit）vs 340KB（float32），无需浮点乘法，适合无 FPU 的嵌入式平台。</p>
+<h3>8.3 稀疏化</h3>
+<p>GRU 权重矩阵中大量接近零的值可以剪枝，进一步减少计算量。</p>
+</div>
+
+<div class="card" id="references">
+<h2>9. 参考资料</h2>
+<ol>
+    <li>J.-M. Valin, <em>A Hybrid DSP/Deep Learning Approach to Real-Time Full-Band Speech Enhancement</em>, IEEE MMSP 2018. (<a href="https://arxiv.org/abs/1709.08243" target="_blank">arXiv:1709.08243</a>)</li>
+    <li>官方代码: <a href="https://github.com/xiph/rnnoise" target="_blank">github.com/xiph/rnnoise</a></li>
+    <li>官方 Demo: <a href="https://jmvalin.ca/demo/rnnoise/" target="_blank">jmvalin.ca/demo/rnnoise</a></li>
+    <li>Mozilla Hacks: <a href="https://hacks.mozilla.org/2017/09/rnnoise-deep-learning-noise-suppression/" target="_blank">RNNoise: Using Deep Learning for Noise Suppression</a></li>
+</ol>
+</div>
+
+</div>
+<footer style="text-align:center;padding:30px;color:#666;font-size:0.85em;border-top:1px solid #eee;margin-top:20px;">
+    <p>RNNoise 技术原理调研报告 | 2026年5月</p>
+</footer>
+</body>
+</html>

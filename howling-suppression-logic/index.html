@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VQE 啸叫抑制逻辑分析报告</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.8; color: #333; background: #f8f9fa; }
+        .container { max-width: 960px; margin: 0 auto; padding: 40px 20px; }
+        header { background: linear-gradient(135deg, #b71c1c, #d32f2f); color: white; padding: 60px 20px; text-align: center; margin-bottom: 40px; }
+        header h1 { font-size: 2.2em; margin-bottom: 10px; }
+        header p { font-size: 1.1em; opacity: 0.9; }
+        .card { background: white; border-radius: 8px; padding: 30px; margin-bottom: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        h2 { color: #b71c1c; font-size: 1.6em; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #ffcdd2; }
+        h3 { color: #c62828; font-size: 1.2em; margin: 20px 0 10px; }
+        h4 { color: #d32f2f; margin: 15px 0 8px; }
+        pre { background: #263238; color: #eeffff; padding: 15px; border-radius: 4px; overflow-x: auto; margin: 10px 0; font-size: 0.9em; }
+        code { font-family: Consolas, Monaco, monospace; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { padding: 10px 8px; border: 1px solid #ddd; text-align: left; font-size: 0.9em; }
+        th { background: #ffebee; }
+        ul, ol { padding-left: 20px; margin: 10px 0; }
+        .flow-box { background: #fafafa; border: 2px solid #ffcdd2; border-radius: 8px; padding: 20px; margin: 15px 0; font-family: monospace; white-space: pre-wrap; font-size: 0.85em; line-height: 1.6; }
+        a { color: #b71c1c; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>VQE 啸叫抑制逻辑分析报告</h1>
+    <p>EZ_VQEM_Interface.c 中算法开启/跳过逻辑与啸叫抑制状态机详解</p>
+    <p style="margin-top:10px;font-size:0.9em;opacity:0.7;">2026年5月</p>
+</header>
+<div class="container">
+
+<!-- 目录 -->
+<div class="card">
+<h2>目录</h2>
+<ol>
+    <li><a href="#overview">算法模块使能标志总览</a></li>
+    <li><a href="#flow">ProcessCore 处理流程</a></li>
+    <li><a href="#aec-skip">AEC 跳过逻辑</a></li>
+    <li><a href="#ns-skip">NS 跳过逻辑</a></li>
+    <li><a href="#dse-trigger">DSE(AINS) 触发逻辑</a></li>
+    <li><a href="#hs-detail">啸叫抑制详细逻辑</a></li>
+    <li><a href="#mutex">模块互斥关系</a></li>
+    <li><a href="#summary">各模块实际执行条件总结</a></li>
+</ol>
+</div>
+
+<!-- 1. 使能标志 -->
+<div class="card" id="overview">
+<h2>1. 算法模块使能标志总览</h2>
+<table>
+<tr><th>标志</th><th>含义</th><th>设置方式</th></tr>
+<tr><td><code>aec_enable</code></td><td>回声消除</td><td>Create 时或 EZ_VQEM_SET_AEC_ENABLE</td></tr>
+<tr><td><code>ns_enable</code></td><td>传统降噪(WebRTC NS)</td><td>Create 时或 EZ_VQEM_SET_NS_ENABLE</td></tr>
+<tr><td><code>dse_enable</code></td><td>AI 降噪(DFNET/GTCRN)</td><td>EZ_VQEM_SET_DSE_ENABLE</td></tr>
+<tr><td><code>hs_enable</code></td><td>啸叫抑制</td><td>YS_VQE_SET_HS_ENABLE</td></tr>
+<tr><td><code>agc_enable</code></td><td>自动增益控制</td><td>Create 时或 EZ_VQEM_SET_AGC_ENABLE</td></tr>
+<tr><td><code>hpf_enable</code></td><td>高通滤波</td><td>Create 时</td></tr>
+<tr><td><code>vad_enable</code></td><td>语音活动检测</td><td>ALC/DSE 开启时自动开启</td></tr>
+<tr><td><code>alc_enable</code></td><td>自动电平控制</td><td>Create 时</td></tr>
+<tr><td><code>dse_level</code></td><td>AINS 模式</td><td>SetConfig (0=DFNET, 1=人声增强, 2=GTCRN)</td></tr>
+</table>
+</div>
+
+<!-- 2. 处理流程 -->
+<div class="card" id="flow">
+<h2>2. ProcessCore 处理流程</h2>
+<div class="flow-box">输入 → ALC(自动电平) → HPF(高通滤波) → 分频(48k→3子带)
+  → 啸叫检测(YS_HowlSup_Process)
+  → AEC(回声消除)
+  → NS(传统降噪)
+  → 合频(3子带→48k)
+  → DSE/AINS(AI降噪)
+  → AGC(自动增益)
+  → VAD(语音活动检测+抑制)
+  → 输出</div>
+<p><strong>关键设计</strong>：啸叫检测在 AEC 之前运行（基于原始输入信号），确保检测不受 AEC/AINS 处理影响。</p>
+</div>
+
+<!-- 3. AEC 跳过逻辑 -->
+<div class="card" id="aec-skip">
+<h2>3. AEC 跳过逻辑</h2>
+<h3>3.1 判断变量</h3>
+<pre><code>int hs_skip_aec = 0;
+int hs_skip_aec_process = 0;
+
+if (hs_enable == Enable) {
+    if (dse_level == 1)           → hs_skip_aec = 1;  // 人声增强: 完全跳过
+    else if (hs_howl_detected_ever) → 不跳过;          // 啸叫已检测: AEC 正常
+    else if (!hs_coldstart_done)    → 不跳过;          // 冷启动期: AEC 正常
+    else                            → hs_skip_aec = 1; // 冷启动过期+无啸叫: 跳过
+}</code></pre>
+
+<h3>3.2 条件汇总</h3>
+<table>
+<tr><th>条件</th><th>hs_skip_aec</th><th>说明</th></tr>
+<tr><td>dse_level == 1（人声增强）</td><td style="color:red;font-weight:bold;">跳过</td><td>人声增强模式完全不走 AEC</td></tr>
+<tr><td>啸叫已检测到</td><td style="color:green;">不跳过</td><td>AEC 正常运行</td></tr>
+<tr><td>冷启动期内（前10秒）</td><td style="color:green;">不跳过</td><td>AEC 运行用于收敛判断</td></tr>
+<tr><td>冷启动过期 + 无啸叫</td><td style="color:red;font-weight:bold;">跳过</td><td>判定不在同一空间</td></tr>
+</table>
+</div>
+
+<!-- 4. NS 跳过逻辑 -->
+<div class="card" id="ns-skip">
+<h2>4. NS 跳过逻辑</h2>
+<pre><code>int skip_ns = (hs_enable &amp;&amp; dse_enable &amp;&amp; howl_fade_counter > HOWL_WARMUP_FRAMES)
+           || (dse_level == 1 &amp;&amp; dse_enable);</code></pre>
+<table>
+<tr><th>条件</th><th>跳过 NS</th><th>原因</th></tr>
+<tr><td>啸叫模式 + AINS 已完成 crossfade</td><td style="color:red;font-weight:bold;">跳过</td><td>AINS 已接管降噪，NS 冗余</td></tr>
+<tr><td>人声增强模式 (dse_level==1)</td><td style="color:red;font-weight:bold;">跳过</td><td>GTCRN 已接管降噪</td></tr>
+<tr><td>其他情况</td><td style="color:green;">不跳过</td><td>NS 正常运行</td></tr>
+</table>
+</div>
+
+<!-- 5. DSE 触发逻辑 -->
+<div class="card" id="dse-trigger">
+<h2>5. DSE(AINS) 触发逻辑</h2>
+<pre><code>int run_dse = (dse_enable == Enable);
+if (run_dse &amp;&amp; hs_enable &amp;&amp; dse_level != 1) {
+    run_dse = (howl_fade_counter >= 0);  // 需要啸叫检测到才运行
+}</code></pre>
+<table>
+<tr><th>条件</th><th>运行 DSE</th><th>说明</th></tr>
+<tr><td>dse_enable + 无 hs_enable</td><td style="color:green;">运行</td><td>正常 AINS 模式</td></tr>
+<tr><td>dse_level == 1（人声增强）</td><td style="color:green;">始终运行</td><td>不受啸叫检测影响</td></tr>
+<tr><td>hs_enable + 啸叫已检测</td><td style="color:green;">运行</td><td>啸叫触发后 AINS 启动</td></tr>
+<tr><td>hs_enable + 啸叫未检测</td><td style="color:red;font-weight:bold;">不运行</td><td>等待啸叫检测结果</td></tr>
+</table>
+
+<h3>5.1 DSE 模式选择 (16k/8k)</h3>
+<table>
+<tr><th>dse_level</th><th>模型</th><th>后处理</th></tr>
+<tr><td>0</td><td>DFNET</td><td>无</td></tr>
+<tr><td>1（人声增强）</td><td>GTCRN + AGC_human_enhance</td><td>线性增益</td></tr>
+<tr><td>2</td><td>GTCRN</td><td>无</td></tr>
+</table>
+</div>
+
+<!-- 6. 啸叫抑制详细逻辑 -->
+<div class="card" id="hs-detail">
+<h2>6. 啸叫抑制详细逻辑</h2>
+
+<h3>6.1 整体设计思路</h3>
+<p>啸叫抑制模块的核心思想：<strong>先用 AEC 自适应滤波器检测是否存在啸叫风险（设备在同一空间），再决定是否启用 AINS 进行深度降噪。</strong></p>
+
+<h3>6.2 两种工作模式</h3>
+<table>
+<tr><th>模式</th><th>条件</th><th>行为</th></tr>
+<tr><td>AEC + AINS 模式</td><td>hs_enable + dse_enable</td><td>啸叫检测 + AINS 联合工作</td></tr>
+<tr><td>纯 AEC 模式</td><td>hs_enable + !dse_enable</td><td>仅用自适应滤波器做啸叫抑制</td></tr>
+</table>
+
+<h3>6.3 啸叫检测流程（冷启动期）</h3>
+<div class="flow-box">┌─────────────────────────────────────────────────────────────┐
+│                    冷启动期（前10秒）                          │
+│                                                             │
+│  1. AEC 始终运行（BufferFarend + Process）                    │
+│  2. 啸叫检测模块（YS_HowlSup_Process）每帧运行               │
+│  3. AEC 收敛度检测（EvzAec_convergence_level）               │
+│                                                             │
+│  触发条件（满足任一即判定啸叫）：                              │
+│    a) YS_HowlSup_Process 返回 1（频域啸叫特征检测）           │
+│    b) AEC 收敛度 >= 2（强回声相关性 = 同一空间）              │
+│                                                             │
+│  结果：                                                      │
+│    - 检测到 → hs_howl_detected_ever = 1, 启动 AINS warm-up  │
+│    - 10秒内未检测到 → 冷启动过期，停止 AEC                    │
+└─────────────────────────────────────────────────────────────┘</div>
+
+<h3>6.4 AINS 启动的 Fade 状态机</h3>
+<p>检测到啸叫后，AINS 不是立即切换，而是经过 warm-up + crossfade：</p>
+<table>
+<tr><th>howl_fade_counter</th><th>状态</th><th>行为</th></tr>
+<tr><td>-1</td><td>正常（未检测到啸叫）</td><td>AINS 不运行</td></tr>
+<tr><td>0</td><td>刚检测到</td><td>开始 warm-up</td></tr>
+<tr><td>1 ~ 2</td><td>warm-up 帧</td><td>AINS 运行但丢弃输出，使用 NS 信号</td></tr>
+<tr><td>3 (HOWL_WARMUP_FRAMES)</td><td>crossfade 帧</td><td>NS 信号 fade-out + AINS 信号 fade-in</td></tr>
+<tr><td>&gt; 3</td><td>正常 AINS 输出</td><td>同时 skip NS</td></tr>
+</table>
+
+<h3>6.5 Crossfade 实现</h3>
+<pre><code>// crossfade 帧：NS 信号渐出 + AINS 信号渐入
+for (data_j = 0; data_j &lt; block_len; data_j++) {
+    float gain_in  = scale_table[data_j];           // 0→1 (AINS渐入)
+    float gain_out = scale_table[len - 1 - data_j]; // 1→0 (NS渐出)
+    tmp_buf[data_j] = (short)(
+        howl_raw_save[data_j] * gain_out +
+        tmp_buf[data_j] * gain_in);
+}</code></pre>
+
+<h3>6.6 远端信号延时缓冲</h3>
+<p>啸叫抑制使用独立的远端缓冲区（<code>hs_aec_far_f</code>），长度由视频分辨率和码流模式决定：</p>
+<table>
+<tr><th>stream_mode</th><th>分辨率</th><th>hs_far_buf_len</th><th>对应延时(约)</th></tr>
+<tr><td>1（主码流）</td><td>≥ 4K (3840×2176)</td><td>70 帧</td><td>~700ms</td></tr>
+<tr><td>1（主码流）</td><td>&lt; 4K</td><td>30 帧</td><td>~300ms</td></tr>
+<tr><td>2（子码流）</td><td>&gt; 2K (2560×1440)</td><td>150 帧</td><td>~1500ms</td></tr>
+<tr><td>2（子码流）</td><td>≤ 2K</td><td>30 帧</td><td>~300ms</td></tr>
+</table>
+<p><strong>原因</strong>：视频编解码引入的延时会导致音频回路延时增大，高分辨率/子码流延时更大。</p>
+
+<h3>6.7 关键数据结构</h3>
+<pre><code>// VQE_HANDLE 中啸叫相关字段
+void* hHS;                      // 啸叫检测模块句柄
+int hs_hc_flag;                 // 当前帧啸叫检测结果 (1=啸叫, 0=正常)
+int hs_howl_detected_ever;      // 锁存标志：一旦检测到就不会清零
+int howl_fade_counter;          // fade 状态机计数器 (-1=正常, 0~3=warm-up/fade)
+short howl_raw_save[];          // 保存 NS 处理后的信号用于 crossfade
+unsigned int hs_frame_count;    // 帧计数器（用于冷启动计时）
+int hs_coldstart_done;          // 冷启动是否过期 (0=进行中, 1=已过期)
+int hs_far_buf_len;             // 远端延时缓冲长度（帧数）
+float hs_aec_far_f[200][160];   // 16k 远端历史缓冲
+float hs_aec_far_f_48k[200][480]; // 48k 远端历史缓冲</code></pre>
+
+<h3>6.8 啸叫检测初始化 (YS_VQE_SET_HS_ENABLE)</h3>
+<ol>
+<li>创建 WebRTC AEC 实例（hAEC[MAX_CHANNELS]），nlp_level=1, delay=-1</li>
+<li>创建 HowlingSuppression 检测模块（hc_mode=-2, hs_level=-1 仅检测不做陷波）</li>
+<li>如果 dse_enable 已开启，启用 AINS 后处理模式（SetPostProcess=1）</li>
+<li>初始化所有状态变量为 0</li>
+</ol>
+</div>
+
+<!-- 7. 互斥关系 -->
+<div class="card" id="mutex">
+<h2>7. 模块互斥关系</h2>
+<table>
+<tr><th>组合</th><th>行为</th><th>宏控制</th></tr>
+<tr><td>hs_enable + dse_enable</td><td>共存：啸叫检测 + AINS 联合</td><td>AEC_CONVERGENCE_ENHANCED</td></tr>
+<tr><td>hs_enable + dse_enable</td><td>互斥：DSE 开启时关闭 HS</td><td>无宏（旧逻辑）</td></tr>
+<tr><td>VOICE_ENHANCE + hs_enable</td><td>互斥：人声增强关闭 HS</td><td>—</td></tr>
+<tr><td>dse_enable + ns_enable</td><td>共存但 NS 可被 skip</td><td>—</td></tr>
+<tr><td>hpf_enable + dse_enable</td><td>互斥：DSE 开启时跳过 HPF</td><td>—</td></tr>
+</table>
+</div>
+
+<!-- 8. 总结 -->
+<div class="card" id="summary">
+<h2>8. 各模块实际执行条件总结</h2>
+<table>
+<tr><th>模块</th><th>执行条件</th></tr>
+<tr><td>HPF</td><td><code>hpf_enable &amp;&amp; !dse_enable</code></td></tr>
+<tr><td>AEC</td><td><code>(aec_enable || hs_enable) &amp;&amp; !hs_skip_aec</code></td></tr>
+<tr><td>NS</td><td><code>ns_enable &amp;&amp; !skip_ns</code></td></tr>
+<tr><td>DSE/AINS</td><td><code>dse_enable &amp;&amp; (无hs || dse_level==1 || 啸叫已检测)</code></td></tr>
+<tr><td>AGC</td><td><code>agc_enable</code>（始终执行）</td></tr>
+<tr><td>VAD</td><td><code>vad_enable</code>（用于抑制漏回声）</td></tr>
+</table>
+
+<h3>完整状态转换图</h3>
+<div class="flow-box">                    ┌──────────────┐
+                    │  HS 开启      │
+                    └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │  冷启动期     │ AEC 运行 + 啸叫检测
+                    │  (前10秒)     │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              │                         │
+    ┌─────────▼─────────┐    ┌─────────▼─────────┐
+    │  啸叫检测到        │    │  10秒无啸叫        │
+    │  (howl_detected=1) │    │  (coldstart_done=1)│
+    └─────────┬─────────┘    └─────────┬─────────┘
+              │                         │
+    ┌─────────▼─────────┐    ┌─────────▼─────────┐
+    │  AINS warm-up     │    │  停止 AEC          │
+    │  (3帧预热)         │    │  仅保留 NS/DSE     │
+    └─────────┬─────────┘    └───────────────────┘
+              │
+    ┌─────────▼─────────┐
+    │  Crossfade        │ NS→AINS 平滑过渡
+    └─────────┬─────────┘
+              │
+    ┌─────────▼─────────┐
+    │  正常 AINS 输出    │ skip NS, AEC 继续
+    └───────────────────┘</div>
+</div>
+
+</div><!-- end container -->
+<footer style="text-align:center;padding:30px;color:#666;font-size:0.85em;border-top:1px solid #eee;margin-top:20px;">
+    <p>VQE 啸叫抑制逻辑分析报告 | 2026年5月</p>
+</footer>
+</body>
+</html>

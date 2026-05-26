@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>URGENT Challenge 优秀方法调研</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.8; color: #333; background: #f8f9fa; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 40px 20px; }
+        header { background: linear-gradient(135deg, #4527a0, #6a1b9a); color: white; padding: 60px 20px; text-align: center; margin-bottom: 40px; }
+        header h1 { font-size: 2.2em; margin-bottom: 10px; }
+        header p { font-size: 1.1em; opacity: 0.9; }
+        .card { background: white; border-radius: 8px; padding: 30px; margin-bottom: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        h2 { color: #4527a0; font-size: 1.6em; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #ede7f6; }
+        h3 { color: #6a1b9a; font-size: 1.2em; margin: 20px 0 10px; }
+        h4 { color: #7b1fa2; margin: 15px 0 8px; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.92em; }
+        th { background: #ede7f6; padding: 10px; border: 1px solid #ddd; text-align: left; }
+        td { padding: 10px; border: 1px solid #ddd; vertical-align: top; }
+        tr.highlight-row { background: #f3e5f5; font-weight: bold; }
+        ul, ol { padding-left: 20px; margin: 10px 0; }
+        .tag { display: inline-block; background: #ede7f6; color: #4527a0; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin: 2px; }
+        .tag-1st { background: #fff8e1; color: #f57f17; font-weight: bold; }
+        .tag-2nd { background: #e3f2fd; color: #1565c0; font-weight: bold; }
+        .highlight { background: #fff8e1; padding: 15px; border-left: 4px solid #ffa000; margin: 15px 0; border-radius: 4px; }
+        a { color: #6a1b9a; }
+        code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: Consolas, monospace; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>URGENT Challenge 优秀方法调研</h1>
+    <p>Universal Speech Enhancement Challenge 2024 / 2025 Top 方法详解</p>
+    <p style="margin-top:10px;font-size:0.9em;opacity:0.7;">2026年5月</p>
+</header>
+<div class="container">
+
+<div class="card">
+<h2>1. URGENT 2024 完整排行榜（盲测阶段）</h2>
+<p>URGENT 2024 Challenge 盲测阶段共有 21 支队伍提交结果。最终排名基于 13 个评估指标的加权排序（含 MOS 主观评测）。下表展示 Top 10 队伍及基线对比：</p>
+<table>
+<tr><th>排名</th><th>队伍</th><th>MOS↑</th><th>DNSMOS↑</th><th>NISQA↑</th><th>PESQ↑</th><th>SDR(dB)↑</th><th>WAcc(%)↑</th></tr>
+<tr class="highlight-row"><td>1</td><td>T1</td><td><strong>3.52</strong></td><td>3.06</td><td>3.66</td><td>2.65</td><td>14.58</td><td>73.57</td></tr>
+<tr><td>2</td><td>T2</td><td>3.46</td><td>3.00</td><td>3.59</td><td><strong>2.80</strong></td><td>14.52</td><td>72.91</td></tr>
+<tr><td>3a</td><td>T3a</td><td>3.44</td><td>2.98</td><td>3.44</td><td>2.55</td><td>13.31</td><td><strong>74.03</strong></td></tr>
+<tr><td>3b</td><td>T3b</td><td>3.40</td><td>2.95</td><td>3.35</td><td>2.66</td><td>13.54</td><td>73.10</td></tr>
+<tr><td>4</td><td>T4</td><td>3.34</td><td>2.98</td><td>3.37</td><td>2.60</td><td>13.14</td><td>71.67</td></tr>
+<tr><td>5</td><td>T5</td><td>3.47</td><td>3.02</td><td>3.60</td><td>2.32</td><td>11.38</td><td>67.96</td></tr>
+<tr><td>6</td><td>T6</td><td>3.41</td><td>3.00</td><td>3.35</td><td>2.52</td><td>12.63</td><td>70.13</td></tr>
+<tr><td>7</td><td>T7</td><td>3.44</td><td>2.90</td><td>3.38</td><td>2.55</td><td>12.42</td><td>69.19</td></tr>
+<tr><td>15</td><td>Baseline (TF-GridNet)</td><td>3.12</td><td>2.83</td><td>3.07</td><td>2.07</td><td>10.13</td><td>62.97</td></tr>
+<tr><td>—</td><td>Noisy Input</td><td>1.88</td><td>1.70</td><td>1.53</td><td>1.26</td><td>0.98</td><td>61.92</td></tr>
+</table>
+<div class="highlight">
+<strong>关键观察：</strong>T17 和 T18 在 DNSMOS/NISQA 上排名很高（DNSMOS 3.26/3.02），但综合 MOS 和 PESQ 都很差（PESQ 仅 1.36/1.47），说明<strong>非侵入指标可能被"欺骗"</strong>，不能单独作为评估依据。
+</div>
+</div>
+
+<div class="card">
+<h2>2. URGENT 2024 第1名：多阶段通用增强系统</h2>
+<p><span class="tag tag-1st">URGENT 2024 第1名</span> <span class="tag">MOS 3.52</span></p>
+<h3>架构</h3>
+<p>4 个子模块级联，每个模块在不同域处理不同退化：</p>
+<table>
+<tr><th>子模块</th><th>处理域</th><th>解决问题</th></tr>
+<tr><td>Audio Declipping</td><td>时域</td><td>削波失真恢复</td></tr>
+<tr><td>Packet Loss Compensation</td><td>子带域</td><td>丢包补偿</td></tr>
+<tr><td>Audio Separation</td><td>时频域</td><td>噪声/混响分离</td></tr>
+<tr><td>Spectral Inpainting</td><td>时频域</td><td>频谱缺失修复（带宽限制）</td></tr>
+</table>
+<h3>核心思想</h3>
+<ul>
+    <li>不同退化类型用不同域的专用模块处理（domain-specific specialization）</li>
+    <li>级联组合实现通用性（universal coverage）</li>
+    <li>每个子模块独立训练后端到端联合微调</li>
+</ul>
+<h3>结果</h3>
+<ul>
+    <li>MOS 3.52（第1名），SDR 14.58 dB（第1名），WAcc 73.57%（第2名）</li>
+    <li>在 URGENT 2025 第二赛道 placed 4th</li>
+</ul>
+<p><strong>论文</strong>：<a href="https://www.isca-archive.org/interspeech_2025/le25b_interspeech.html" target="_blank">Multistage Universal Speech Enhancement System for URGENT Challenge</a></p>
+</div>
+
+<div class="card">
+<h2>3. URGENT 2025 第1名：Dual-Path + Fourier Analysis Network</h2>
+<p><span class="tag tag-1st">URGENT 2025 Track 1 第1名</span> <span class="tag">Interspeech 2025</span></p>
+<h3>架构</h3>
+<ul>
+    <li><strong>双路径时频域网络</strong>：参考 BSRNN/TF-GridNet 思路，时间和频率维度分别建模</li>
+    <li><strong>快速频带处理（Fast Band-Processing）</strong>：并行 band split 和 merge 操作，提升计算效率</li>
+    <li><strong>FAN 通道混合模块</strong>：基于傅里叶分析网络（Fourier Analysis Networks），辅助目标语音估计</li>
+</ul>
+<h3>关键创新：渐进式块扩展（Progressive Block Extension）</h3>
+<p>解决 GPU 资源有限时的大模型训练问题：</p>
+<ol>
+    <li>先训练小模型</li>
+    <li>逐步增加 block 数量（保持参数初始化继承）</li>
+    <li>最终扩展到大模型规模</li>
+</ol>
+<h3>结果</h3>
+<p>Interspeech 2025 URGENT Challenge Track 1 第1名</p>
+<p><strong>论文</strong>：<a href="https://www.isca-archive.org/interspeech_2025/sun25d_interspeech.html" target="_blank">Scaling beyond Denoising</a></p>
+</div>
+
+<div class="card">
+<h2>4. USEMamba：Regression + Generative 双分支 Mamba</h2>
+<p><span class="tag tag-2nd">URGENT 2025 Track 1 盲测第2名</span> <span class="tag">Mamba/SSM</span></p>
+<h3>架构</h3>
+<ul>
+    <li>基于 <strong>Mamba（状态空间模型 SSM）</strong>，替代 Transformer 的注意力机制</li>
+    <li>双分支设计：
+        <ul>
+            <li><strong>Regression 分支</strong>：直接预测干净语音（保真度好）</li>
+            <li><strong>Generative 分支</strong>：利用生成模型补充细节（感知质量好）</li>
+        </ul>
+    </li>
+    <li>两分支结果融合，兼顾保真和感知</li>
+</ul>
+<h3>关键优势</h3>
+<ul>
+    <li>Mamba 计算复杂度线性，长序列建模优于 Transformer</li>
+    <li>仅用部分训练数据即达到第2名，展示强泛化能力</li>
+</ul>
+<p><strong>论文</strong>：<a href="https://arxiv.org/abs/2505.21198" target="_blank">Universal Speech Enhancement with Regression and Generative Mamba</a></p>
+</div>
+
+<div class="card">
+<h2>5. TS-URGENet：三阶段端到端网络</h2>
+<p><span class="tag tag-2nd">URGENT 2025 Track 1 第2名</span></p>
+<h3>架构</h3>
+<table>
+<tr><th>阶段</th><th>功能</th><th>处理重点</th></tr>
+<tr><td>Stage 1: 预处理</td><td>粗增强</td><td>初步噪声/混响抑制</td></tr>
+<tr><td>Stage 2: 主增强</td><td>精细处理</td><td>主要的语音增强逻辑</td></tr>
+<tr><td>Stage 3: 后处理</td><td>质量优化</td><td>消除伪影，提升感知质量</td></tr>
+</table>
+<p>三阶段渐进式处理，每阶段针对不同层次的退化，端到端联合训练。</p>
+<p><strong>论文</strong>：<a href="https://www.isca-archive.org/interspeech_2025/rong25_interspeech.html" target="_blank">TS-URGENet: A Three-stage Universal Robust and Generalizable Speech Enhancement Network</a></p>
+</div>
+
+<div class="card">
+<h2>6. 关键技术趋势总结</h2>
+<table>
+<tr><th>趋势</th><th>说明</th><th>代表方法</th></tr>
+<tr><td>多阶段/级联系统占优</td><td>Top 方法普遍采用多阶段处理，针对不同退化类型</td><td>URGENT 2024 T1, TS-URGENet</td></tr>
+<tr><td>Mamba/SSM 崛起</td><td>状态空间模型在语音增强中展现竞争力，效率优于 Transformer</td><td>USEMamba</td></tr>
+<tr><td>回归 + 生成互补</td><td>回归保真度好但过平滑，生成补充高频细节</td><td>USEMamba, PGUSE</td></tr>
+<tr><td>渐进式训练</td><td>解决大模型训练资源限制</td><td>URGENT 2025 第1名</td></tr>
+<tr><td>多指标综合评估</td><td>单一非侵入指标可能被"欺骗"，需多维度评估</td><td>URGENT 评估准则</td></tr>
+</table>
+<h3>未解决的难题</h3>
+<ul>
+    <li><strong>重叠语音</strong>（speech overlap, unison）</li>
+    <li><strong>强宽带噪声 / 瞬时噪声</strong></li>
+    <li><strong>高混响环境</strong>（RT60 &gt; 2s）</li>
+    <li>缺乏可靠的"样本难度"客观度量</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>参考资料</h2>
+<ol>
+    <li><a href="https://arxiv.org/abs/2506.01611" target="_blank">Lessons Learned from the URGENT 2024 Speech Enhancement Challenge</a></li>
+    <li><a href="https://arxiv.org/abs/2406.04660" target="_blank">URGENT Challenge: Universality, Robustness, and Generalizability For Speech Enhancement</a></li>
+    <li><a href="https://arxiv.org/abs/2505.23212" target="_blank">Interspeech 2025 URGENT Speech Enhancement Challenge</a></li>
+    <li><a href="https://arxiv.org/abs/2601.13531" target="_blank">ICASSP 2026 URGENT Speech Enhancement Challenge</a></li>
+    <li><a href="https://urgent-challenge.com/" target="_blank">URGENT Challenge 官网</a></li>
+</ol>
+</div>
+
+</div>
+<footer style="text-align:center;padding:30px;color:#666;font-size:0.85em;border-top:1px solid #eee;margin-top:20px;">
+    <p>URGENT Challenge 优秀方法调研 | 2026年5月</p>
+</footer>
+</body>
+</html>

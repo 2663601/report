@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音频信号处理领域主要比赛调研</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.8; color: #333; background: #f8f9fa; }
+        .container { max-width: 960px; margin: 0 auto; padding: 40px 20px; }
+        header { background: linear-gradient(135deg, #0d47a1, #1565c0); color: white; padding: 60px 20px; text-align: center; margin-bottom: 40px; }
+        header h1 { font-size: 2.2em; margin-bottom: 10px; }
+        header p { font-size: 1.1em; opacity: 0.9; }
+        .card { background: white; border-radius: 8px; padding: 30px; margin-bottom: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        h2 { color: #0d47a1; font-size: 1.6em; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #e3f2fd; }
+        h3 { color: #1565c0; font-size: 1.2em; margin: 20px 0 10px; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th { background: #e3f2fd; padding: 10px; border: 1px solid #ddd; text-align: left; }
+        td { padding: 10px; border: 1px solid #ddd; vertical-align: top; }
+        ul, ol { padding-left: 20px; margin: 10px 0; }
+        .tag { display: inline-block; background: #e3f2fd; color: #0d47a1; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; margin: 2px; }
+        .highlight { background: #e8f5e9; padding: 15px; border-left: 4px solid #4caf50; margin: 15px 0; border-radius: 4px; }
+        a { color: #1565c0; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>音频信号处理领域主要比赛调研</h1>
+    <p>DNS Challenge / AEC Challenge / URGENT / CHiME / Clarity / L3DAS / VoiceMOS / SIG Challenge</p>
+    <p style="margin-top:10px;font-size:0.9em;opacity:0.7;">2026年5月</p>
+</header>
+<div class="container">
+
+<div class="card">
+<h2>概览</h2>
+<p>音频信号处理领域有多个国际性比赛，主要由 Microsoft、IEEE、ISCA 等机构组织，依托 ICASSP 和 Interspeech 两大顶会举办。这些比赛覆盖了从降噪、回声消除到语音质量评估的完整音频处理链路。</p>
+<table>
+<tr><th>比赛</th><th>主办方</th><th>核心任务</th><th>依托会议</th><th>历届</th></tr>
+<tr><td><strong>DNS Challenge</strong></td><td>Microsoft</td><td>深度噪声抑制</td><td>ICASSP / Interspeech</td><td>5届 (2020-2023)</td></tr>
+<tr><td><strong>AEC Challenge</strong></td><td>Microsoft</td><td>声学回声消除</td><td>ICASSP</td><td>4届 (2021-2023)</td></tr>
+<tr><td><strong>URGENT Challenge</strong></td><td>CMU等</td><td>通用语音增强</td><td>ICASSP / Interspeech</td><td>3届 (2024-2026)</td></tr>
+<tr><td><strong>CHiME Challenge</strong></td><td>Sheffield等</td><td>噪声环境语音识别</td><td>独立Workshop</td><td>8届 (2011-2024)</td></tr>
+<tr><td><strong>Clarity Challenge</strong></td><td>UK Clarity Project</td><td>助听器语音增强</td><td>ICASSP / 独立</td><td>6+届 (2021-2025)</td></tr>
+<tr><td><strong>L3DAS Challenge</strong></td><td>Sapienza大学</td><td>3D音频增强与定位</td><td>ICASSP</td><td>3届 (2021-2023)</td></tr>
+<tr><td><strong>VoiceMOS Challenge</strong></td><td>NVIDIA/NII等</td><td>语音质量MOS预测</td><td>Interspeech / SLT</td><td>3届 (2022-2024)</td></tr>
+<tr><td><strong>SIG Challenge</strong></td><td>Microsoft</td><td>语音信号质量改善</td><td>ICASSP</td><td>2届 (2023-2024)</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>1. DNS Challenge（深度噪声抑制挑战赛）</h2>
+<p><span class="tag">Microsoft</span> <span class="tag">ICASSP/Interspeech</span> <span class="tag">2020-2023</span></p>
+<h3>目标</h3>
+<p>推动实时单通道语音增强技术的发展，最大化增强语音的主观感知质量。重点关注深度学习方法在噪声抑制中的应用。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>实时通信中的背景噪声（办公室、街道、咖啡厅等）</li>
+    <li>语音失真（过度抑制导致的语音损伤）</li>
+    <li>混响和邻近说话人干扰</li>
+    <li>个性化降噪（ICASSP 2023 新增：利用说话人注册音频区分目标和干扰语音）</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>实时约束</strong>：算法延迟不超过 40ms</li>
+    <li><strong>主观评价</strong>：使用 ITU-T P.835 标准（SIG/BAK/OVRL 三维度 MOS）</li>
+    <li><strong>大规模数据集</strong>：提供 750+ 小时干净语音 + 180+ 种噪声类型</li>
+    <li><strong>两个赛道</strong>：实时赛道（有计算约束）和非实时赛道</li>
+</ul>
+<h3>历届演进</h3>
+<table>
+<tr><th>届次</th><th>会议</th><th>新增重点</th></tr>
+<tr><td>第1届</td><td>Interspeech 2020</td><td>基础单通道降噪</td></tr>
+<tr><td>第2届</td><td>ICASSP 2021</td><td>宽带(48kHz)支持</td></tr>
+<tr><td>第3届</td><td>Interspeech 2021</td><td>情感语音保护</td></tr>
+<tr><td>第4届</td><td>ICASSP 2022</td><td>盲测集评估</td></tr>
+<tr><td>第5届</td><td>ICASSP 2023</td><td>个性化降噪（说话人注册）</td></tr>
+</table>
+<p><strong>官方资源</strong>：<a href="https://github.com/microsoft/DNS-Challenge" target="_blank">GitHub</a></p>
+</div>
+
+<div class="card">
+<h2>2. AEC Challenge（声学回声消除挑战赛）</h2>
+<p><span class="tag">Microsoft</span> <span class="tag">ICASSP</span> <span class="tag">2021-2023</span></p>
+<h3>目标</h3>
+<p>推动声学回声消除技术的发展，解决全双工通信中的回声问题，同时保持近端语音质量。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>扬声器播放的远端信号通过麦克风回传（声学回声）</li>
+    <li>非线性失真（扬声器饱和、功放失真）</li>
+    <li>双讲场景下的回声消除（近端和远端同时说话）</li>
+    <li>延迟估计和跟踪</li>
+    <li>全频带(48kHz)回声消除</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>真实数据</strong>：提供真实设备录制的回声数据（非仿真）</li>
+    <li><strong>双讲评估</strong>：单独评估单讲和双讲场景</li>
+    <li><strong>MOS + WER</strong>：同时评估语音质量和语音识别率</li>
+    <li><strong>个性化赛道</strong>（第4届）：利用说话人信息辅助回声消除</li>
+</ul>
+<h3>评估指标</h3>
+<ul>
+    <li>单讲场景：回声抑制后的 MOS</li>
+    <li>双讲场景：近端语音保留质量 MOS</li>
+    <li>语音识别率（WER）</li>
+</ul>
+<p><strong>官方资源</strong>：<a href="https://github.com/microsoft/AEC-Challenge" target="_blank">GitHub</a></p>
+</div>
+
+<div class="card">
+<h2>3. URGENT Challenge（通用鲁棒语音增强挑战赛）</h2>
+<p><span class="tag">CMU/多机构</span> <span class="tag">ICASSP/Interspeech</span> <span class="tag">2024-2026</span></p>
+<h3>目标</h3>
+<p>推动通用、鲁棒、可泛化的语音增强系统，能够处理多种失真类型、多语言、多领域的输入条件。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>单一模型处理多种失真（噪声、混响、削波、带宽限制、丢包等 7 种失真类型）</li>
+    <li>跨语言泛化（覆盖 5 种语言）</li>
+    <li>数据可扩展性（使用带噪数据训练）</li>
+    <li>语音质量评估（Track 2：增强语音的自动质量评估）</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>通用性</strong>：不针对单一任务，要求一个模型处理所有失真</li>
+    <li><strong>双赛道</strong>：Track 1 通用增强 + Track 2 质量评估</li>
+    <li><strong>大规模参与</strong>：80+ 团队注册，29 个有效提交（ICASSP 2026）</li>
+    <li><strong>多指标评估</strong>：PESQ、STOI、SI-SDR、DNSMOS 等综合评估</li>
+</ul>
+<p><strong>官方网站</strong>：<a href="https://urgent-challenge.com/" target="_blank">urgent-challenge.com</a></p>
+</div>
+
+<div class="card">
+<h2>4. CHiME Challenge（噪声环境语音处理挑战赛）</h2>
+<p><span class="tag">Sheffield大学等</span> <span class="tag">独立Workshop</span> <span class="tag">2011-2024</span></p>
+<h3>目标</h3>
+<p>推动鲁棒自动语音识别（ASR）技术，促进语音处理、信号处理和机器学习交叉领域的研究。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>真实噪声环境下的语音识别（公交车、咖啡厅、街道等）</li>
+    <li>远场语音识别（麦克风阵列）</li>
+    <li>多说话人重叠语音分离与识别</li>
+    <li>会议场景的说话人日志和转录（CHiME-7/8 NOTSOFAR）</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>真实录音</strong>：使用真实环境录制的数据（非仿真）</li>
+    <li><strong>多通道</strong>：支持 2/4/6 通道麦克风阵列</li>
+    <li><strong>端到端评估</strong>：最终指标是 WER（词错误率）</li>
+    <li><strong>前后端联合</strong>：鼓励信号处理前端与 ASR 后端联合优化</li>
+</ul>
+<h3>历届演进</h3>
+<table>
+<tr><th>届次</th><th>年份</th><th>重点场景</th></tr>
+<tr><td>CHiME-1/2</td><td>2011/2013</td><td>家庭环境噪声下的关键词识别</td></tr>
+<tr><td>CHiME-3/4</td><td>2015/2016</td><td>平板电脑录音的真实噪声 ASR</td></tr>
+<tr><td>CHiME-5</td><td>2018</td><td>家庭聚会多说话人对话</td></tr>
+<tr><td>CHiME-6</td><td>2020</td><td>多阵列远场对话转录</td></tr>
+<tr><td>CHiME-7</td><td>2023</td><td>多场景多设备通用 ASR</td></tr>
+<tr><td>CHiME-8</td><td>2024</td><td>NOTSOFAR 会议室场景</td></tr>
+</table>
+<p><strong>官方网站</strong>：<a href="https://www.chimechallenge.org/" target="_blank">chimechallenge.org</a></p>
+</div>
+
+<div class="card">
+<h2>5. Clarity Challenge（助听器语音清晰度挑战赛）</h2>
+<p><span class="tag">UK Clarity Project</span> <span class="tag">ICASSP/独立</span> <span class="tag">2021-2025</span></p>
+<h3>目标</h3>
+<p>改善听力受损用户在日常噪声环境中的语音可懂度，推动助听器信号处理算法的机器学习化。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>听力受损者在噪声环境中的语音理解困难</li>
+    <li>助听器的个性化信号处理（根据听力图定制）</li>
+    <li>语音可懂度的自动预测（无需人工听力测试）</li>
+    <li>多干扰源、头部运动等动态场景</li>
+</ul>
+<h3>两类子挑战</h3>
+<ul>
+    <li><strong>CEC（Enhancement Challenge）</strong>：设计助听器增强算法，最大化听障用户的语音可懂度</li>
+    <li><strong>CPC（Prediction Challenge）</strong>：预测听障用户对增强语音的可懂度评分（无需真人测试）</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>听力图驱动</strong>：每个测试样本附带听者的听力损失曲线</li>
+    <li><strong>双耳处理</strong>：6 通道输入（每耳 3 个麦克风）</li>
+    <li><strong>真实评估</strong>：最终由真实听障用户进行听力测试</li>
+</ul>
+<p><strong>官方网站</strong>：<a href="https://claritychallenge.org/" target="_blank">claritychallenge.org</a></p>
+</div>
+
+<div class="card">
+<h2>6. L3DAS Challenge（3D音频机器学习挑战赛）</h2>
+<p><span class="tag">Sapienza大学</span> <span class="tag">ICASSP</span> <span class="tag">2021-2023</span></p>
+<h3>目标</h3>
+<p>推动 3D 空间音频场景下的机器学习方法，包括 3D 语音增强和 3D 声音事件定位与检测。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>Ambisonics（一阶环绕声）录音中的语音增强</li>
+    <li>3D 空间中的声源定位（方位角、仰角、距离）</li>
+    <li>声音事件检测（识别声音类别和时间边界）</li>
+    <li>办公室等混响环境下的空间音频处理</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>Ambisonics 格式</strong>：使用一阶 FOA（4通道）录音</li>
+    <li><strong>真实环境</strong>：在真实办公室中录制</li>
+    <li><strong>双任务</strong>：Task 1 语音增强（STOI指标）+ Task 2 声音事件定位检测</li>
+    <li><strong>1-mic 和 2-mic</strong>：支持单阵列和双阵列配置</li>
+</ul>
+<p><strong>官方网站</strong>：<a href="https://www.l3das.com/" target="_blank">l3das.com</a></p>
+</div>
+
+<div class="card">
+<h2>7. VoiceMOS Challenge（语音质量MOS预测挑战赛）</h2>
+<p><span class="tag">NVIDIA/NII</span> <span class="tag">Interspeech/SLT</span> <span class="tag">2022-2024</span></p>
+<h3>目标</h3>
+<p>推动语音质量自动评估技术，预测人类对语音的主观评分（MOS），减少对昂贵人工听力测试的依赖。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>合成语音的自然度评估</li>
+    <li>增强语音的质量评估（SIG/BAK/OVRL）</li>
+    <li>歌声合成和语音转换的质量预测</li>
+    <li>跨系统、跨语言的 MOS 预测泛化</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>多赛道</strong>：高质量合成语音 / 歌声 / 带噪增强语音</li>
+    <li><strong>无参考评估</strong>：不需要干净参考信号</li>
+    <li><strong>小样本</strong>：Track 3 仅提供 100 个标注样本训练</li>
+    <li><strong>ITU-T P.835</strong>：评估 SIG（语音质量）、BAK（背景噪声）、OVRL（整体质量）</li>
+</ul>
+<p><strong>官方资源</strong>：<a href="https://voicemos-challenge.github.io/" target="_blank">voicemos-challenge.github.io</a></p>
+</div>
+
+<div class="card">
+<h2>8. SIG Challenge（语音信号质量改善挑战赛）</h2>
+<p><span class="tag">Microsoft</span> <span class="tag">ICASSP</span> <span class="tag">2023-2024</span></p>
+<h3>目标</h3>
+<p>提升通信系统中语音信号的整体质量，使用真实（非仿真）测试集评估实时算法的综合表现。</p>
+<h3>解决的问题</h3>
+<ul>
+    <li>通信系统中的综合语音质量问题（噪声+回声+混响+编解码失真）</li>
+    <li>联合处理多种退化（不是单独解决某一个问题）</li>
+    <li>真实设备和网络条件下的语音质量</li>
+</ul>
+<h3>关键特点</h3>
+<ul>
+    <li><strong>真实测试集</strong>：使用真实通信场景录制的数据评估</li>
+    <li><strong>综合任务</strong>：同时处理 AEC + NS + 去混响</li>
+    <li><strong>实时约束</strong>：算法必须满足实时处理要求</li>
+    <li><strong>P.835 评估</strong>：使用 ITU-T P.835 主观评估框架</li>
+</ul>
+<p><strong>官方资源</strong>：<a href="https://github.com/microsoft/SIG-Challenge" target="_blank">GitHub</a></p>
+</div>
+
+<div class="card">
+<h2>比赛关系与技术栈对应</h2>
+<div class="highlight">
+<strong>音频通信处理链路中各比赛的覆盖范围：</strong><br><br>
+<code>麦克风输入 → [AEC回声消除] → [DNS降噪] → [去混响] → [编码传输] → [解码] → [质量评估]</code><br><br>
+<ul>
+    <li><strong>AEC Challenge</strong>：覆盖回声消除环节</li>
+    <li><strong>DNS Challenge</strong>：覆盖噪声抑制环节</li>
+    <li><strong>SIG Challenge</strong>：覆盖整条链路的联合优化</li>
+    <li><strong>URGENT Challenge</strong>：通用增强（所有退化类型）</li>
+    <li><strong>VoiceMOS Challenge</strong>：覆盖质量评估环节</li>
+    <li><strong>CHiME Challenge</strong>：前端增强 + 后端 ASR 联合</li>
+    <li><strong>Clarity Challenge</strong>：面向听障用户的特殊增强</li>
+    <li><strong>L3DAS Challenge</strong>：3D 空间音频场景</li>
+</ul>
+</div>
+</div>
+
+<div class="card">
+<h2>参考资料</h2>
+<ol>
+    <li>Microsoft DNS Challenge: <a href="https://github.com/microsoft/DNS-Challenge" target="_blank">github.com/microsoft/DNS-Challenge</a></li>
+    <li>Microsoft AEC Challenge: <a href="https://github.com/microsoft/AEC-Challenge" target="_blank">github.com/microsoft/AEC-Challenge</a></li>
+    <li>URGENT Challenge: <a href="https://urgent-challenge.com/" target="_blank">urgent-challenge.com</a></li>
+    <li>CHiME Challenge: <a href="https://www.chimechallenge.org/" target="_blank">chimechallenge.org</a></li>
+    <li>Clarity Challenge: <a href="https://claritychallenge.org/" target="_blank">claritychallenge.org</a></li>
+    <li>L3DAS Challenge: <a href="https://www.l3das.com/" target="_blank">l3das.com</a></li>
+    <li>VoiceMOS Challenge 2024, arXiv:2409.07001</li>
+    <li>ICASSP 2024 Speech Signal Improvement Challenge, arXiv:2401.14444</li>
+    <li>ICASSP 2026 URGENT Challenge, arXiv:2601.13531</li>
+</ol>
+</div>
+
+</div>
+<footer style="text-align:center;padding:30px;color:#666;font-size:0.85em;border-top:1px solid #eee;margin-top:20px;">
+    <p>音频信号处理领域主要比赛调研 | 2026年5月</p>
+</footer>
+</body>
+</html>

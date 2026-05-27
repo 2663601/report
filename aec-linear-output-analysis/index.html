@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AEC 线性输出频谱条纹失真分析</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.8; color: #333; background: #f8f9fa; }
+        .container { max-width: 960px; margin: 0 auto; padding: 40px 20px; }
+        header { background: linear-gradient(135deg, #1565c0, #1976d2); color: white; padding: 60px 20px; text-align: center; margin-bottom: 40px; }
+        header h1 { font-size: 2em; margin-bottom: 10px; }
+        header p { font-size: 1.1em; opacity: 0.9; }
+        .card { background: white; border-radius: 8px; padding: 30px; margin-bottom: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        h2 { color: #1565c0; font-size: 1.5em; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #bbdefb; }
+        h3 { color: #1976d2; font-size: 1.2em; margin: 20px 0 10px; }
+        h4 { color: #1e88e5; margin: 15px 0 8px; }
+        pre { background: #263238; color: #eeffff; padding: 15px; border-radius: 4px; overflow-x: auto; margin: 10px 0; font-size: 0.85em; line-height: 1.5; }
+        code { font-family: Consolas, Monaco, monospace; }
+        .inline-code { background: #e3f2fd; padding: 2px 6px; border-radius: 3px; font-family: Consolas, monospace; font-size: 0.9em; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { padding: 10px 8px; border: 1px solid #ddd; text-align: left; font-size: 0.9em; }
+        th { background: #e3f2fd; }
+        ul, ol { padding-left: 20px; margin: 10px 0; }
+        .highlight { background: #fff3e0; border-left: 4px solid #ff9800; padding: 15px; margin: 15px 0; border-radius: 0 4px 4px 0; }
+        .key-point { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 15px; margin: 15px 0; border-radius: 0 4px 4px 0; }
+        .formula { background: #f5f5f5; padding: 12px 20px; margin: 10px 0; border-radius: 4px; font-family: 'Times New Roman', serif; font-size: 1.1em; text-align: center; }
+        .flow-box { background: #fafafa; border: 2px solid #bbdefb; border-radius: 8px; padding: 20px; margin: 15px 0; font-family: monospace; white-space: pre-wrap; font-size: 0.85em; line-height: 1.6; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>AEC 线性输出频谱条纹失真分析</h1>
+    <p>为什么时域相减会产生频谱横向条纹？如何正确提取线性 AEC 输出？</p>
+    <p style="margin-top:10px;font-size:0.9em;opacity:0.7;">2026年5月</p>
+</header>
+<div class="container">
+
+<!-- 1. 问题现象 -->
+<div class="card">
+<h2>1. 问题现象</h2>
+<p>在 WebRTC AEC 中，自适应滤波器的线性输出 <span class="inline-code">e[i] = nearend[i] - y[i]</span> 直接保存为 PCM 文件后，频谱图中出现明显的<strong>等间距横向条纹</strong>（水平方向的周期性能量分布）。</p>
+<p>而经过 NLP（非线性处理）后的输出则频谱干净、平滑，没有这种条纹。</p>
+<p style="margin-top:15px;"><strong>核心问题</strong>：为什么简单的时域相减 <span class="inline-code">e = nearend - y</span> 会产生频谱失真？</p>
+</div>
+
+<!-- 2. 原因分析 -->
+<div class="card">
+<h2>2. 信号处理原理分析</h2>
+
+<h3>2.1 Overlap-Save 结构中的时域相减问题</h3>
+<p>WebRTC AEC 使用 128 点 FFT（PART_LEN2=128），每次处理 64 点新数据（PART_LEN=64）。回声估计 <span class="inline-code">y[i]</span> 的计算过程是：</p>
+<ol>
+    <li>远端信号经过频域自适应滤波：<span class="inline-code">Y(k) = X(k) · W(k)</span></li>
+    <li>IFFT 得到 128 点时域信号</li>
+    <li>取后 64 点作为有效输出：<span class="inline-code">y[i] = ifft[PART_LEN + i] × scale</span></li>
+</ol>
+
+<div class="highlight">
+<strong>关键问题</strong>：<span class="inline-code">y[i]</span> 是通过 overlap-save 方法从频域滤波得到的，它只是 128 点 IFFT 输出的后半段。当自适应滤波器系数不完美时（未完全收敛、非线性失真、延时偏差），<span class="inline-code">y[i]</span> 与真实回声之间存在频率相关的误差。
+</div>
+
+<h3>2.2 频谱条纹的产生机制</h3>
+<p>横向条纹的本质是<strong>频域上等间距的能量凸起</strong>，产生原因有两个层面：</p>
+
+<h4>原因一：Block 边界不连续（主要原因）</h4>
+<p>每 64 点一个 block 直接拼接时，相邻 block 的边界处信号值可能不连续。这种周期性的不连续（每 64 点 = 4ms @16kHz）在频域表现为：</p>
+<div class="formula">
+    f<sub>stripe</sub> = fs / PART_LEN = 16000 / 64 = 250 Hz 及其谐波
+</div>
+<p>频谱图上就会看到以 250Hz 为间隔的等距横向条纹。</p>
+
+<h4>原因二：自适应滤波器的频率栅格效应</h4>
+<p>128 点 FFT 的频率分辨率为 <span class="inline-code">Δf = fs/N = 16000/128 = 125Hz</span>。自适应滤波器在频域逐 bin 更新系数，相邻频率 bin 之间的系数可能存在不连续跳变。当滤波器未完全收敛时，某些频率 bin 的回声消除效果好，某些差，形成周期性的残余能量分布。</p>
+
+<h4>原因三：滤波器增益放大</h4>
+<p>自适应滤波器在某些频带可能产生<strong>增益放大</strong>（即 |E(k)| > |D(k)|，残差能量超过原始近端能量）。这在以下情况常见：</p>
+<ul>
+    <li>滤波器刚开始收敛，系数不稳定</li>
+    <li>双讲（near-end + far-end 同时存在）</li>
+    <li>回声路径突变</li>
+    <li>延时估计偏差导致滤波器对齐错误</li>
+</ul>
+<p>增益放大的频带在频谱上表现为异常亮的横向条带。</p>
+
+<h3>2.3 为什么 NLP 输出没有条纹？</h3>
+<p>NLP 对线性输出做了三件关键的事情：</p>
+<ol>
+    <li><strong>WOLA 重构</strong>：加窗 → FFT → 处理 → IFFT → overlap-add，消除 block 边界不连续</li>
+    <li><strong>频带能量限幅</strong>：<span class="inline-code">if |E(k)|² > |D(k)|² then E(k) = D(k)</span>，消除增益放大</li>
+    <li><strong>NLP 增益抑制</strong>：基于相干性的频域增益 <span class="inline-code">hNl[k]</span>，进一步压制残余回声</li>
+</ol>
+</div>
+
+<!-- 3. 解决方案 -->
+<div class="card">
+<h2>3. 正确提取线性输出的关键步骤</h2>
+
+<h3>3.1 完整的 WOLA（Weighted Overlap-Add）重构</h3>
+<p>不能直接拼接 <span class="inline-code">e[64]</span>，必须经过完整的 WOLA 流程：</p>
+
+<div class="flow-box">eBuf[128] (上一帧e[64] + 当前帧e[64])
+    │
+    ▼ Step 1: 加窗 (WindowData)
+    windowed[k] = eBuf[k] × sqrtHanning[k]           (k=0..63)
+    windowed[64+k] = eBuf[64+k] × sqrtHanning[64-k]  (k=0..63)
+    │
+    ▼ Step 2: FFT (128点)
+    EFW[k] = FFT(windowed)  → 频域复数表示
+    │
+    ▼ Step 3: 频带能量限幅 ★关键★
+    if |EFW[k]|² > |DFW[k]|²:
+        EFW[k] = DFW[k]    // 防止增益放大
+    │
+    ▼ Step 4: IFFT (128点)
+    time[128] = IFFT(EFW)
+    │
+    ▼ Step 5: Overlap-Add
+    output[k] = time[k] × sqrtHanning[k] + outBuf[k]
+    outBuf[k] = time[64+k] × sqrtHanning[64-k]       // 存给下一帧</div>
+
+<h3>3.2 各步骤解决的具体问题</h3>
+<table>
+<tr><th>步骤</th><th>解决的问题</th><th>原理</th></tr>
+<tr><td>加窗 (sqrtHanning)</td><td>Block 边界不连续</td><td>窗函数将信号两端压向零，消除边界跳变</td></tr>
+<tr><td>FFT → IFFT</td><td>帧间相位连续性</td><td>频域变换保证 128 点信号内部的频率一致性，使前后半帧具有正确的相位关系</td></tr>
+<tr><td>频带能量限幅</td><td>滤波器增益放大</td><td>确保残差不超过原始信号，消除异常频带的能量凸起</td></tr>
+<tr><td>Overlap-Add</td><td>帧间平滑过渡</td><td>sqrtHanning² 满足完美重构条件，相邻帧重叠部分能量互补</td></tr>
+</table>
+
+<div class="key-point">
+<strong>最关键的步骤是「频带能量限幅」</strong>：即使做了完整的 WOLA 重构，如果不限制 |E(k)| ≤ |D(k)|，自适应滤波器在未收敛频带产生的增益放大仍然会表现为频谱条纹。这一步是消除条纹的决定性因素。
+</div>
+
+<h3>3.3 数学解释：为什么 sqrtHanning 能实现完美重构</h3>
+<p>sqrtHanning 窗满足 Princen-Bradley 条件：</p>
+<div class="formula">
+    w²[k] + w²[k + N/2] = 1, &nbsp;&nbsp; 对所有 k ∈ [0, N/2-1]
+</div>
+<p>其中 N=128, N/2=64。这意味着相邻两帧的重叠部分加权后能量之和恒为 1，实现无失真的信号重构。</p>
+<p>具体来说，对于第 n 帧和第 n+1 帧在重叠区域的重构：</p>
+<div class="formula">
+    output[k] = frame_n[64+k] × w[64-k] × w[k] + frame_{n+1}[k] × w[k] × w[k]
+</div>
+<p>由于 <span class="inline-code">w[k] × w[64-k]</span> 的互补性，重叠区域的总增益恒为 1。</p>
+</div>
+
+<!-- 4. 代码实现 -->
+<div class="card">
+<h2>4. 最终代码实现</h2>
+<pre><code>#ifdef AEC_DELAY_DUMP
+if (aec->fp_linear_out) {
+    float linear_fft[PART_LEN2];
+    float linear_efw[2][PART_LEN1];
+    float linear_dfw[2][PART_LEN1];
+    short linear_out_buf[PART_LEN];
+    float scale_l = 2.0f / PART_LEN2;
+    int k;
+
+    // Step 1: 对 eBuf 加窗 → efw
+    for (k = 0; k &lt; PART_LEN; k++) {
+        linear_fft[k] = aec-&gt;eBuf[k] * EvzAec_sqrtHanning[k];
+        linear_fft[PART_LEN + k] = aec-&gt;eBuf[PART_LEN + k]
+                                   * EvzAec_sqrtHanning[PART_LEN - k];
+    }
+    aec_rdft_forward_128(linear_fft);
+    // StoreAsComplex
+    linear_efw[0][0] = linear_fft[0]; linear_efw[1][0] = 0;
+    linear_efw[0][PART_LEN] = linear_fft[1]; linear_efw[1][PART_LEN] = 0;
+    for (k = 1; k &lt; PART_LEN; k++) {
+        linear_efw[0][k] = linear_fft[2*k];
+        linear_efw[1][k] = linear_fft[2*k+1];
+    }
+
+    // Step 2: 对 dBuf 加窗 → dfw
+    for (k = 0; k &lt; PART_LEN; k++) {
+        linear_fft[k] = aec-&gt;dBuf[k] * EvzAec_sqrtHanning[k];
+        linear_fft[PART_LEN + k] = aec-&gt;dBuf[PART_LEN + k]
+                                   * EvzAec_sqrtHanning[PART_LEN - k];
+    }
+    aec_rdft_forward_128(linear_fft);
+    linear_dfw[0][0] = linear_fft[0]; linear_dfw[1][0] = 0;
+    linear_dfw[0][PART_LEN] = linear_fft[1]; linear_dfw[1][PART_LEN] = 0;
+    for (k = 1; k &lt; PART_LEN; k++) {
+        linear_dfw[0][k] = linear_fft[2*k];
+        linear_dfw[1][k] = linear_fft[2*k+1];
+    }
+
+    // Step 3: 频带能量限幅 ★关键★
+    for (k = 0; k &lt; PART_LEN1; k++) {
+        if ((linear_efw[0][k]*linear_efw[0][k] + linear_efw[1][k]*linear_efw[1][k]) &gt;
+            (linear_dfw[0][k]*linear_dfw[0][k] + linear_dfw[1][k]*linear_dfw[1][k])) {
+            linear_efw[0][k] = linear_dfw[0][k];
+            linear_efw[1][k] = linear_dfw[1][k];
+        }
+    }
+
+    // Step 4: IFFT
+    linear_fft[0] = linear_efw[0][0];
+    linear_fft[1] = linear_efw[0][PART_LEN];
+    for (k = 1; k &lt; PART_LEN; k++) {
+        linear_fft[2*k] = linear_efw[0][k];
+        linear_fft[2*k+1] = -linear_efw[1][k];
+    }
+    aec_rdft_inverse_128(linear_fft);
+
+    // Step 5: Overlap-Add
+    for (k = 0; k &lt; PART_LEN; k++) {
+        linear_fft[k] *= scale_l;
+        float val = linear_fft[k] * EvzAec_sqrtHanning[k]
+                  + aec-&gt;outBufLinear[k];
+        linear_fft[PART_LEN+k] *= scale_l;
+        aec-&gt;outBufLinear[k] = linear_fft[PART_LEN+k]
+                             * EvzAec_sqrtHanning[PART_LEN-k];
+        // 饱和输出
+        if (val &gt; 32767.f) val = 32767.f;
+        else if (val &lt; -32768.f) val = -32768.f;
+        linear_out_buf[k] = (short)val;
+    }
+    fwrite(linear_out_buf, sizeof(short), PART_LEN, aec-&gt;fp_linear_out);
+}
+#endif</code></pre>
+</div>
+
+<!-- 5. 总结 -->
+<div class="card">
+<h2>5. 总结</h2>
+<table>
+<tr><th>问题</th><th>原因</th><th>解决方法</th></tr>
+<tr><td>频谱等距横向条纹</td><td>Block 边界不连续 + 滤波器增益放大</td><td>WOLA 重构 + 频带能量限幅</td></tr>
+<tr><td>Block 边界不连续</td><td>64 点直接拼接，相邻 block 相位跳变</td><td>sqrtHanning 加窗 + overlap-add</td></tr>
+<tr><td>滤波器增益放大</td><td>未收敛频带的 |E(k)| > |D(k)|</td><td>频带能量限幅：E(k) = min(E(k), D(k))</td></tr>
+<tr><td>频率栅格效应</td><td>128 点 FFT 分辨率 125Hz，逐 bin 系数不连续</td><td>WOLA 的 FFT→IFFT 保证频域一致性</td></tr>
+</table>
+
+<div class="key-point">
+<strong>核心结论</strong>：在分块频域自适应滤波系统中，时域残差 e[n] = d[n] - y[n] 不能直接作为最终输出使用。必须经过 WOLA 重构（消除 block 边界效应）和频带能量限幅（消除滤波器增益放大），才能得到频谱干净的线性 AEC 输出。
+</div>
+</div>
+
+</div>
+<footer style="text-align:center;padding:30px;color:#666;font-size:0.85em;border-top:1px solid #eee;margin-top:20px;">
+    <p>AEC 线性输出频谱条纹失真分析 | 2026年5月</p>
+</footer>
+</body>
+</html>

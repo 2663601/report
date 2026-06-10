@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>延时估计算法集成经验总结</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.8; color: #333; background: #f8f9fa; }
+        .container { max-width: 960px; margin: 0 auto; padding: 40px 20px; }
+        header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 50px 20px; text-align: center; margin-bottom: 40px; }
+        header h1 { font-size: 2em; margin-bottom: 8px; }
+        header p { opacity: 0.9; }
+        .card { background: white; border-radius: 8px; padding: 28px; margin-bottom: 28px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        h2 { color: #1a237e; font-size: 1.5em; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e8eaf6; }
+        h3 { color: #283593; font-size: 1.2em; margin: 18px 0 10px; }
+        h4 { color: #3949ab; margin: 12px 0 6px; }
+        pre { background: #263238; color: #eeffff; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; margin: 10px 0; }
+        code { background: #e8eaf6; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+        table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em; }
+        th, td { padding: 10px 12px; border: 1px solid #ddd; text-align: left; }
+        th { background: #e8eaf6; font-weight: 600; }
+        tr:nth-child(even) { background: #fafafa; }
+        .tip { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 12px 16px; margin: 12px 0; border-radius: 0 4px 4px 0; }
+        .warn { background: #fff3e0; border-left: 4px solid #ff9800; padding: 12px 16px; margin: 12px 0; border-radius: 0 4px 4px 0; }
+        .error { background: #ffebee; border-left: 4px solid #f44336; padding: 12px 16px; margin: 12px 0; border-radius: 0 4px 4px 0; }
+        ul, ol { padding-left: 24px; margin: 8px 0; }
+        li { margin: 4px 0; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>延时估计算法集成经验总结</h1>
+    <p>WebRTC Binary Spectrum / AEC3 Matched Filter / GCC-PHAT 对比评估框架</p>
+    <p style="margin-top:8px;font-size:0.85em;opacity:0.7;">2026年5月</p>
+</header>
+<div class="container">
+
+<!-- 项目概述 -->
+<div class="card">
+<h2>1. 项目概述</h2>
+<p>本项目搭建了一个延时估计算法对比评估框架，用于评估不同延时估计方法在 AEC（声学回声消除）场景下的性能。</p>
+<h3>已集成的算法</h3>
+<table>
+<tr><th>算法</th><th>来源</th><th>语言</th><th>精度</th><th>复杂度</th></tr>
+<tr><td>WebRTC Binary Spectrum</td><td>项目已有 VQE/AEC_webrtc/delay_estimator.c</td><td>C</td><td>帧级(4ms)</td><td>极低(6μs)</td></tr>
+<tr><td>AEC3 Matched Filter (ewan-xu)</td><td>github.com/ewan-xu/AEC3</td><td>C++14</td><td>采样点级(0.25ms)</td><td>中等(66μs)</td></tr>
+<tr><td>GCC-PHAT</td><td>自行实现</td><td>C</td><td>采样点级</td><td>较高(354μs)</td></tr>
+</table>
+
+<h3>评估结果（echo_only, delay=100ms）</h3>
+<table>
+<tr><th>算法</th><th>准确率(±8ms)</th><th>收敛时间</th><th>平均误差</th><th>平均耗时</th></tr>
+<tr><td><strong>WebRTC Binary Spectrum</strong></td><td><strong>98.0%</strong></td><td><strong>200ms</strong></td><td>6.99ms</td><td>6.4μs</td></tr>
+<tr><td><strong>AEC3 Matched Filter</strong></td><td>91.4%</td><td>860ms</td><td><strong>5.00ms</strong></td><td>65.8μs</td></tr>
+<tr><td>GCC-PHAT</td><td>4.4%</td><td>1720ms</td><td>78.61ms</td><td>354.1μs</td></tr>
+</table>
+</div>
+
+<!-- 框架架构 -->
+<div class="card">
+<h2>2. 框架架构</h2>
+<h3>目录结构</h3>
+<pre>
+delay_est_benchmark/
+├── CMakeLists.txt              # 构建配置（C + C++ 混编）
+├── benchmark_main.c            # 评估主程序（逐帧跑所有算法）
+├── delay_estimator_api.h/c     # 统一接口定义
+├── de_webrtc_binary.h/c        # WebRTC 二值谱封装
+├── de_matched_filter.h         # AEC3 matched filter 接口
+├── de_aec3_matched_filter.cpp  # AEC3 matched filter C++ wrapper
+├── de_gcc_phat.h/c             # GCC-PHAT 实现
+├── aec3_stubs.cpp              # AEC3 依赖的 stub 函数
+├── cpu_stub.c                  # CPU feature detection stub
+├── generate_test_dataset.py    # 测试数据生成脚本
+├── run_all.sh                  # 一键运行脚本
+├── analyze_results.py          # 结果汇总分析
+├── plot_results.py             # 可视化脚本
+└── test_dataset/               # 生成的测试数据（36个场景）
+</pre>
+
+<h3>统一接口设计（C 语言多态）</h3>
+<pre>
+// 每种算法实现相同的接口
+DelayEstHandle xxx_create(const DelayEstConfig* config);
+int xxx_process(DelayEstHandle handle, const float* farend, const float* nearend, DelayEstResult* result);
+void xxx_destroy(DelayEstHandle handle);
+
+// benchmark_main.c 通过函数指针分发
+switch (alg) {
+    case DE_ALG_WEBRTC_BINARY:
+        process_func = webrtc_binary_process; break;
+    case DE_ALG_AEC3_MATCHED_FILTER:
+        process_func = matched_filter_process; break;
+}
+// 统一循环调用
+for (f = 0; f &lt; num_frames; f++)
+    process_func(handle, far_frame, near_frame, &amp;result);
+</pre>
+</div>
+
+<!-- WebRTC Binary Spectrum 集成 -->
+<div class="card">
+<h2>3. WebRTC Binary Spectrum 集成经验</h2>
+<h3>原理</h3>
+<p>直接调用项目已有的 <code>VQE/AEC_webrtc/delay_estimator.c</code> 和 <code>delay_estimator_wrapper.c</code>。封装层只需做 FFT 将时域信号转为频谱。</p>
+
+<h3>关键步骤</h3>
+<ol>
+<li>累积输入到 PART_LEN=64 样本的块</li>
+<li>加 sqrtHanning 窗 → 128 点实数 FFT（aec_rdft_forward_128）</li>
+<li>提取 65 个频带的幅度谱</li>
+<li>调用 <code>Evz_AddFarSpectrumFloat()</code> 和 <code>Evz_DelayEstimatorProcessFloat()</code></li>
+</ol>
+
+<h3>踩坑记录</h3>
+<div class="error">
+<strong>Segfault：</strong>必须在使用 FFT 前调用 <code>aec_rdft_init()</code>，否则内部函数指针为 NULL。
+</div>
+<div class="warn">
+<strong>内存分配：</strong>原始代码使用预分配 char buffer 的方式（非 malloc），需要分配足够大的连续内存（64KB）并按偏移传入。
+</div>
+<div class="tip">
+<strong>延时单位：</strong>返回值是"块数"（每块 = PART_LEN = 64 样本），需要乘以 PART_LEN 转换为采样点。
+</div>
+</div>
+
+<!-- AEC3 Matched Filter 集成 -->
+<div class="card">
+<h2>4. AEC3 Matched Filter 集成经验（ewan-xu/AEC3）</h2>
+
+<h3>算法架构</h3>
+<pre>
+EchoPathDelayEstimator::EstimateDelay()
+  ├── AlignmentMixer::ProduceOutput()     → 多通道混合为单通道
+  ├── Decimator::Decimate()               → 4倍降采样（16kHz→4kHz）
+  ├── MatchedFilter::Update()             → 多段 NLMS 自适应滤波
+  │     └── MatchedFilterCore()           → 逐样本 NLMS 更新
+  ├── MatchedFilterLagAggregator::Aggregate() → 直方图投票聚合
+  └── ClockdriftDetector::Update()        → 时钟漂移检测
+</pre>
+
+<h3>核心 NLMS 算法</h3>
+<pre>
+for each sample i in sub_block:
+    s = Σ(h[k] * x[x_start_index + k])    // 滤波器输出
+    e = y[i] - s                            // 误差
+    x2_sum = Σ(x[k]²)                      // 信号能量
+    if (x2_sum > threshold && !saturation):
+        alpha = smoothing * e / x2_sum
+        h[k] += alpha * x[k]               // NLMS 更新
+    x_start_index--                         // 滑动
+</pre>
+
+<h3>关键参数</h3>
+<table>
+<tr><th>参数</th><th>值</th><th>说明</th></tr>
+<tr><td>kBlockSize</td><td>64</td><td>输入块大小（4ms@16kHz）</td></tr>
+<tr><td>down_sampling_factor</td><td>4</td><td>降采样倍数</td></tr>
+<tr><td>sub_block_size</td><td>16</td><td>降采样后每块样本数</td></tr>
+<tr><td>num_filters</td><td>5</td><td>匹配滤波器数量</td></tr>
+<tr><td>window_size_sub_blocks</td><td>32</td><td>每个滤波器的窗长</td></tr>
+<tr><td>smoothing</td><td>0.7</td><td>NLMS 步长</td></tr>
+<tr><td>histogram threshold (initial)</td><td>5</td><td>初始报告阈值</td></tr>
+<tr><td>histogram threshold (converged)</td><td>20</td><td>收敛后报告阈值</td></tr>
+</table>
+
+<h3>环形缓冲管理（最关键的坑）</h3>
+<div class="error">
+<strong>DownsampledRenderBuffer 写入逻辑：</strong>
+<ul>
+<li>write 指针<strong>向前递减</strong>（每块减 sub_block_size）</li>
+<li>数据<strong>逆序写入</strong>：<code>std::copy(ds.rbegin(), ds.rend(), buffer.begin() + write)</code></li>
+<li>read 指针 = write + sub_block_size（最新数据位置）</li>
+<li>必须用环形索引处理边界：<code>(wr + i) % buf_size</code></li>
+</ul>
+</div>
+
+<h3>编译依赖解决</h3>
+<table>
+<tr><th>问题</th><th>解决方案</th></tr>
+<tr><td>缺少 <code>WEBRTC_POSIX</code> 定义</td><td>CMake 中 <code>add_definitions(-DWEBRTC_POSIX -DWEBRTC_LINUX)</code></td></tr>
+<tr><td><code>clockdrift_detector.h</code> 缺少 <code>size_t</code></td><td>添加 <code>#include &lt;cstddef&gt;</code></td></tr>
+<tr><td><code>logging.cc</code> 依赖 <code>rtc::LeftPad</code>、<code>rtc::ToHex</code></td><td>在 <code>aec3_stubs.cpp</code> 中提供 stub 实现</td></tr>
+<tr><td><code>absl::base_internal::ThrowStdOutOfRange</code></td><td>stub: <code>throw std::out_of_range(what)</code></td></tr>
+<tr><td><code>absl::ascii_internal::kToLower</code></td><td>stub: 提供完整 256 字节查找表（用 char 转义避免 narrowing）</td></tr>
+<tr><td><code>field_trial</code> 函数</td><td>stub: 返回空字符串/false</td></tr>
+</table>
+
+<h3>评估策略：Hold Last Value</h3>
+<div class="tip">
+<strong>公平对比：</strong>AEC3 是保守策略（只在高置信度时报告），直接统计"有效帧/总帧"会不公平。解决方案：一旦收敛出延时，后续帧保持报告上一次的值（hold-last-value），这与实际 AEC 系统的使用方式一致。
+</div>
+</div>
+
+<!-- GCC-PHAT -->
+<div class="card">
+<h2>5. GCC-PHAT 集成经验</h2>
+<h3>算法原理</h3>
+<pre>
+1. FFT(farend) → X(f), FFT(nearend) → Y(f)
+2. 互功率谱: Gxy = X * conj(Y)
+3. PHAT 加权: Gxy / |Gxy|
+4. IFFT → 互相关函数 R(τ)
+5. 找峰值: delay = argmax R(τ)
+</pre>
+
+<h3>当前问题</h3>
+<div class="warn">
+<strong>准确率极低（4.4%）：</strong>当前实现是滑动窗口方式，但参数和缓冲管理有问题。建议参考成熟的流式 GCC-PHAT 实现（如 xiongyihui/tdoa）重写。
+</div>
+</div>
+
+<!-- 测试数据 -->
+<div class="card">
+<h2>6. 测试数据生成</h2>
+<h3>数据来源</h3>
+<ul>
+<li><strong>delay_metrics_data/</strong>：设备采集的延时对齐 lpb+mic 配对（干净回声路径）</li>
+<li><strong>class_16k/</strong>：ESC-50 噪声库（50 类环境噪声，16kHz）</li>
+<li><strong>near_data/</strong>：近端语音（用于双讲场景）</li>
+</ul>
+
+<h3>生成的 36 个场景</h3>
+<table>
+<tr><th>类型</th><th>数量</th><th>参数</th></tr>
+<tr><td>纯回声</td><td>18</td><td>3对设备 × 6种延时(50/100/150/200/300/500ms)</td></tr>
+<tr><td>回声+噪声</td><td>6</td><td>2对 × 3种SNR(20/10/0dB)</td></tr>
+<tr><td>双讲</td><td>6</td><td>2对 × 3种SER(10/0/-10dB)</td></tr>
+<tr><td>延时突变</td><td>6</td><td>2对 × 3种突变(100→200/200→50/300→100ms)</td></tr>
+</table>
+
+<h3>延时突变数据生成的关键</h3>
+<div class="error">
+<strong>错误做法：</strong>把 mic 信号切成两段分别加不同延时再拼接 → 切换点产生脉冲断裂。<br>
+<strong>正确做法：</strong>从同一段连续 mic 信号的不同偏移位置读取：
+<pre>
+n &lt; change_point:  nearend[n] = mic[n + delay1_samples]
+n >= change_point: nearend[n] = mic[n + delay2_samples]
+</pre>
+这样 nearend 信号本身是连续的，只是回声对应的远端位置发生了跳变。
+</div>
+</div>
+
+<!-- 编译环境 -->
+<div class="card">
+<h2>7. 编译环境与工具链</h2>
+
+<h3>推荐环境</h3>
+<table>
+<tr><th>环境</th><th>说明</th></tr>
+<tr><td>WSL2 Ubuntu-22.04</td><td>Windows 上的 Linux 编译环境</td></tr>
+<tr><td>gcc 11.4 + cmake 3.22</td><td>C++14 标准</td></tr>
+<tr><td>Build 目录</td><td><code>~/delay_bench_build</code>（WSL home，不能在 /mnt/e/ 上编译）</td></tr>
+</table>
+
+<h3>编译命令</h3>
+<pre>
+# 首次编译
+wsl -d Ubuntu-22.04 bash -c "rm -rf ~/delay_bench_build && mkdir ~/delay_bench_build && \
+  cd ~/delay_bench_build && \
+  cmake /mnt/e/server_code/ezvqe_forrtc_250514/ezvqe_forrtc/delay_est_benchmark -DCMAKE_BUILD_TYPE=Debug && \
+  make -j4"
+
+# 增量编译（修改代码后）
+wsl -d Ubuntu-22.04 bash -c "cd ~/delay_bench_build && make -j4"
+
+# 运行单场景
+wsl -d Ubuntu-22.04 bash -c "cd ~/delay_bench_build && ./delay_est_benchmark \
+  /mnt/e/.../test_dataset/echo_only_pair0_delay100ms/farend.pcm \
+  /mnt/e/.../test_dataset/echo_only_pair0_delay100ms/nearend.pcm 100 16000 160"
+</pre>
+
+<h3>关键踩坑</h3>
+<div class="error">
+<strong>不能在 /mnt/e/ (NTFS) 上编译：</strong>CMake 无法在 NTFS 文件系统上复制可执行文件（"Cannot copy output executable"）。必须在 WSL 本地文件系统（~/）中编译，源码通过 /mnt/e/ 路径引用。
+</div>
+<div class="warn">
+<strong>WSL2 apt 安装问题：</strong>Ubuntu 26.04 太新（镜像源未同步），需要用 22.04 LTS。公司网络可能有代理导致 Hash Sum mismatch。
+</div>
+</div>
+
+<!-- 后续计划 -->
+<div class="card">
+<h2>8. 后续待完成工作</h2>
+<ol>
+<li><strong>集成最新 AEC3</strong>（audio_processing/aec3/）— 需要 C++17、新依赖 stub</li>
+<li><strong>修复 GCC-PHAT</strong> — 参考成熟实现重写流式版本</li>
+<li><strong>跑全部 36 个场景</strong> — 使用 run_all.sh 批量评估</li>
+<li><strong>噪声/双讲/延时突变场景分析</strong> — 对比各算法在不同条件下的鲁棒性</li>
+<li><strong>可视化报告</strong> — 生成延时曲线对比图</li>
+</ol>
+</div>
+
+<!-- 参考资源 -->
+<div class="card">
+<h2>9. 参考资源</h2>
+<ul>
+<li><a href="https://github.com/ewan-xu/AEC3">ewan-xu/AEC3</a> — 从 WebRTC 提取的独立 AEC3（2018版，C++14）</li>
+<li><a href="https://github.com/microsoft/AEC-Challenge">Microsoft AEC Challenge</a> — 盲测集数据</li>
+<li><a href="https://github.com/xiongyihui/tdoa">xiongyihui/tdoa</a> — GCC-PHAT Python 参考实现</li>
+<li><a href="https://chromium.googlesource.com/external/webrtc/stable/webrtc/+/refs/heads/master/modules/audio_processing/utility/delay_estimator.c">WebRTC delay_estimator.c</a> — 二值谱延时估计原始源码</li>
+<li><a href="https://github.com/johnybang/AdaptiveFilter-LMS">johnybang/AdaptiveFilter-LMS</a> — NLMS C 实现参考</li>
+</ul>
+</div>
+
+</div>
+<footer style="text-align:center;padding:30px;color:#666;font-size:0.85em;border-top:1px solid #eee;margin-top:20px;">
+    <p>延时估计算法集成经验总结 | 2026年5月</p>
+</footer>
+</body>
+</html>

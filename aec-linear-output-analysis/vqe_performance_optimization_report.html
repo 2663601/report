@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VQE 音频算法性能优化技术报告</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
+        h1 { color: #1a5276; border-bottom: 3px solid #2980b9; padding-bottom: 10px; }
+        h2 { color: #2c3e50; border-bottom: 1px solid #bdc3c7; padding-bottom: 5px; margin-top: 40px; }
+        h3 { color: #34495e; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { border: 1px solid #ddd; padding: 10px 12px; text-align: left; }
+        th { background: #2c3e50; color: white; }
+        tr:nth-child(even) { background: #f8f9fa; }
+        .highlight { background: #d5f5e3; font-weight: bold; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+        pre { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .metric-box { display: inline-block; background: #eaf2f8; border-left: 4px solid #2980b9; padding: 10px 15px; margin: 5px; border-radius: 3px; }
+        .metric-value { font-size: 1.5em; font-weight: bold; color: #1a5276; }
+        .metric-label { font-size: 0.85em; color: #666; }
+        .risk-low { color: #27ae60; }
+        .risk-med { color: #f39c12; }
+    </style>
+</head>
+<body>
+
+<h1>VQE 音频算法性能优化技术报告</h1>
+
+<p><strong>项目</strong>：ys_vqe_forshc<br>
+<strong>目标平台</strong>：NT98520（Cortex-A9, ARMv7-A, NEON, 16kHz）<br>
+<strong>优化日期</strong>：2026年6月2日-3日<br>
+<strong>配置模式</strong>：AI_TALK（对讲上行，含 AEC+NS+AGC）</p>
+
+<div style="margin: 20px 0;">
+    <div class="metric-box"><div class="metric-value">38% → 12.4%</div><div class="metric-label">单核 CPU 占用</div></div>
+    <div class="metric-box"><div class="metric-value">2.61x → 8.04x</div><div class="metric-label">实时率</div></div>
+    <div class="metric-box"><div class="metric-value">-67%</div><div class="metric-label">CPU 降幅</div></div>
+</div>
+
+<h2>1. 优化前基线</h2>
+<table>
+<tr><th>模块</th><th>耗时(us/block)</th><th>占比</th></tr>
+<tr><td>AEC</td><td>2430</td><td>63.9%</td></tr>
+<tr><td>NS</td><td>1221</td><td>32.1%</td></tr>
+<tr><td>AGC</td><td>103</td><td>2.7%</td></tr>
+<tr><td>其他</td><td>48</td><td>1.3%</td></tr>
+<tr class="highlight"><td><strong>总计</strong></td><td><strong>3802</strong></td><td>Realtime 2.61x, CPU 38%</td></tr>
+</table>
+
+<h2>2. AEC 优化（6项）</h2>
+
+<h3>2.1 FilterAdaptation 隔帧更新</h3>
+<p>每2帧更新一次自适应滤波器权重，省 24次FFT → 12次。</p>
+<p><strong>效果</strong>：AEC -15% | <span class="risk-med">低风险</span>：收敛变慢一倍，稳态不变</p>
+
+<h3>2.2 关闭 delay_logging</h3>
+<p>跳过 DelayEstimatorProcessFloat 和直方图统计。</p>
+<p><strong>效果</strong>：-3% | <span class="risk-low">无风险</span></p>
+
+<h3>2.3 关闭 metricsMode</h3>
+<p>跳过 UpdateLevel/UpdateMetrics 功率统计。</p>
+<p><strong>效果</strong>：-2% | <span class="risk-low">无风险</span></p>
+
+<h3>2.4 去除噪声功率估计</h3>
+<p>Comfort Noise 已关闭，噪声估计循环为死代码。</p>
+<p><strong>效果</strong>：-2% | <span class="risk-low">无风险</span></p>
+
+<h3>2.5 去除 abs_spectrum sqrtf</h3>
+<p>delay_logging 已关闭，129×2次 sqrtf 为死代码。</p>
+<p><strong>效果</strong>：-2% | <span class="risk-low">无风险</span></p>
+
+<h3>2.6 去除 cohxd2 + NLP qsort→partial select</h3>
+<p>单延时路径设备不需要双路相干；qsort 改为 O(k*n) 选择。</p>
+<p><strong>效果</strong>：-5% | <span class="risk-low">无风险（数学等价）</span></p>
+
+<h2>3. NS 优化（4项）</h2>
+
+<h3>3.1 fast_expf 替换（含范围保护）</h3>
+<p>SpeechNoiseProb + NoiseEstimation 中 expf → 整数位操作近似。</p>
+<pre>static inline float ns_fast_expf(float x) {
+    if (x &lt; -87.0f) return 0.0f;
+    if (x &gt; 88.0f) return 3.4e38f;
+    union { float f; int32_t i; } v;
+    v.i = (int32_t)(12102203.0f * x + 1065353216.0f);
+    return v.f;
+}</pre>
+<p><strong>效果</strong>：NS -8% | <span class="risk-low">无风险</span></p>
+
+<h3>3.2 SIMULT 3→2</h3>
+<p>噪声量化估计从3组并行减为2组，省1/3循环。</p>
+<p><strong>效果</strong>：NS -8% | <span class="risk-med">低风险</span></p>
+
+<h3>3.3 merge_aec FFT 场景自适应降频</h3>
+<p>核心创新：基于 AEC 的 hNlXdAvg 判断近端/回声状态，动态调整更新频率。</p>
+<ul>
+<li>回声段（hNlXdAvg &lt; 0.9）：每帧更新，保证回声抑制</li>
+<li>近端单讲（持续50帧后）：每4帧更新一次，省75% FFT</li>
+</ul>
+<p><strong>效果</strong>：近端场景 NS -56% | <span class="risk-low">无风险</span>（回声段不降频）</p>
+
+<h3>3.4 gainmap 能量补偿跳过</h3>
+<p>省 Energy(256) + sqrtf + factor 计算。</p>
+<p><strong>效果</strong>：NS -5% | <span class="risk-low">低风险</span></p>
+
+<h2>4. 效果汇总</h2>
+<table>
+<tr><th>阶段</th><th>us/block</th><th>Realtime</th><th>CPU</th></tr>
+<tr><td>原始</td><td>3802</td><td>2.61x</td><td>38%</td></tr>
+<tr><td>+AEC 全部优化</td><td>2763</td><td>3.59x</td><td>28%</td></tr>
+<tr><td>+NS fast_math+SIMULT</td><td>2588</td><td>3.78x</td><td>26.5%</td></tr>
+<tr class="highlight"><td><strong>+NS merge_aec降频</strong></td><td><strong>~1240</strong></td><td><strong>8.04x</strong></td><td><strong>12.4%</strong></td></tr>
+</table>
+
+<h2>5. 未采纳方案及原因</h2>
+<table>
+<tr><th>方案</th><th>失败原因</th></tr>
+<tr><td>ns_fast_logf</td><td>5%误差通过时间平滑逐帧累积→音频输出归零</td></tr>
+<tr><td>FeatureUpdate跳帧</td><td>破坏内部计数器同步→参数更新失效</td></tr>
+<tr><td>手写NEON intrinsics</td><td>编译器自动向量化已覆盖，手写反而慢9%</td></tr>
+<tr><td>AEC分区12→8</td><td>NLP固定开销不随分区变，实际仅省11%</td></tr>
+</table>
+
+<h2>6. 关键经验</h2>
+<ol>
+<li>先 profile 定位瓶颈（AEC 64% + NS 32%），避免盲目优化</li>
+<li>快速数学函数必须加范围保护（溢出→NaN→后续全部归零）</li>
+<li>累积计算路径不能用近似函数（误差逐帧叠加失控）</li>
+<li>-ftree-vectorize 已自动向量化简单循环，手写NEON无额外收益</li>
+<li>场景自适应策略优于固定降频（回声段保质量，安静段省性能）</li>
+<li>ARM 32-bit printf 不要混用 %f 和 %d（参数栈对齐问题）</li>
+</ol>
+
+<hr>
+<p><em>生成时间：2026-06-03 | NT98520 Cortex-A9 | AI_TALK 16kHz 1024样本/帧</em></p>
+</body>
+</html>

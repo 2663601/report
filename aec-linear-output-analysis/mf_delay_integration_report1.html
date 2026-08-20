@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MF延时估计集成AEC — 调试总结与原理文档</title>
+<style>
+body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1100px; margin: 0 auto; padding: 20px; line-height: 1.7; color: #333; }
+h1 { border-bottom: 3px solid #2c3e50; padding-bottom: 10px; }
+h2 { color: #2c3e50; border-left: 4px solid #3498db; padding-left: 12px; margin-top: 40px; }
+h3 { color: #34495e; }
+pre { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+.diagram { background: #f8f9fa; border: 1px solid #dee2e6; padding: 16px; border-radius: 6px; font-family: "Courier New", monospace; white-space: pre; font-size: 12px; line-height: 1.4; overflow-x: auto; }
+.problem { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 16px; margin: 16px 0; }
+.solution { background: #d4edda; border-left: 4px solid #28a745; padding: 12px 16px; margin: 16px 0; }
+.key { background: #cce5ff; border-left: 4px solid #007bff; padding: 12px 16px; margin: 16px 0; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+th, td { border: 1px solid #dee2e6; padding: 8px 12px; text-align: left; }
+th { background: #e9ecef; }
+</style>
+</head>
+<body>
+
+<h1>MF(5f) 延时估计集成 AEC WebRTC — 调试总结与原理文档</h1>
+<p><strong>日期</strong>：2026-06-10 &nbsp; <strong>作者</strong>：AI辅助调试记录</p>
+
+<h2>1. 架构概述</h2>
+<p>在 AEC WebRTC 的 <code>SignalBasedDelayCorrection</code> 中集成 MF(5f) Matched Filter 延时估计，替代或辅助原有 Binary 延时估计器驱动 far_buf 修正。</p>
+
+<div class="diagram">
+┌─────────────────────────────────────────────────────────────┐
+│  EvzAec_ProcessFrames (每帧循环)                             │
+│                                                             │
+│  1. SignalBasedDelayCorrection(aec) → move_elements         │
+│  2. MoveFarReadPtrWithoutSystemDelayUpdate(move_elements)   │
+│  3. SoftResetDelayEstimator(moved_elements)                 │
+│  4. SoftResetDelayEstimatorFarend(moved_elements)           │
+│  5. signal_delay_correction += moved_elements               │
+│  6. ProcessBlock() × N                                      │
+└─────────────────────────────────────────────────────────────┘
+
+SignalBasedDelayCorrection 内部：
+  MF 收敛(conf≥0.8) → last_delay = mf_abs (RAW模式)
+  MF 未收敛          → last_delay = Evz_last_delay() (Binary)
+  delay = last_delay - lookahead
+  若 delay > upper_bound 或 delay ≤ 0 → 触发修正
+</div>
+
+<h2>2. 核心概念：Lookahead</h2>
+
+<h3>2.1 什么是 Lookahead</h3>
+<p>Binary 延时估计器内部维护一个 <code>near_history</code> FIFO。每帧不是用当前 near spectrum 做比较，而是取 <code>near_history[lookahead]</code>（即 lookahead 帧之前的 near）做比较。</p>
+
+<div class="key">
+<strong>物理含义</strong>：不是"用未来的 near"，而是"延迟使用过去的 near，让 far_history 有更多时间积累"。代价是估计结果延迟 L 帧出来。
+</div>
+
+<h3>2.2 代码体现</h3>
+<pre>
+// delay_estimator.c — Evz_ProcessBinarySpectrum()
+if (self->near_history_size > 1) {
+    memmove(&self->binary_near_history[1], &self->binary_near_history[0], ...);
+    self->binary_near_history[0] = binary_near_spectrum;  // 存入当前
+    binary_near_spectrum = self->binary_near_history[self->lookahead];  // 取旧的
+}
+// 然后用这个"旧 near" 和 far_history 做 BitCountComparison
+</pre>
+
+<h3>2.3 为什么 Binary 输出要减去 Lookahead</h3>
+
+<div class="diagram">
+时刻 T，真实回声延时 = D blocks，lookahead = L
+
+near_history:  [N_T, N_T-1, ..., N_T-L]
+                                   ↑ 实际用 N_(T-L) 做比较
+
+far_history:   [F_T, F_T-1, ..., F_T-L-D, ...]
+               [0]  [1]         [L+D]
+
+N_(T-L) 的回声来自 F_(T-L-D)
+F_(T-L-D) 在 far_history 中位置 = T - (T-L-D) = L + D
+
+Binary 搜索结果: last_delay = L + D
+真实残余延时:    delay = last_delay - L = D
+
+结论: 减 lookahead 是去掉 near 被延迟使用带来的虚假偏移
+</div>
+
+<h3>2.4 SoftReset 如何改变 Lookahead</h3>
+<pre>
+int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
+    old = self->lookahead;
+    self->lookahead -= delay_shift;
+    clamp to [0, near_history_size-1];
+    return old - self->lookahead;  // 实际移动量
+}
+</pre>
+
+<table>
+<tr><th>修正方向</th><th>moved_elements</th><th>lookahead 变化</th><th>原因</th></tr>
+<tr><td>Far 回退（负修正）</td><td>-N</td><td>+N（增加）</td><td>far 坐标后退，near 也要后退保持对齐</td></tr>
+<tr><td>Far 前移（正修正）</td><td>+N</td><td>-N（减少）</td><td>far 坐标前进，near 跟着前进</td></tr>
+</table>
+
+<div class="diagram">
+SoftReset Far 侧 (delay_shift = -3，far 回退):
+  修正前: far_history = [F5, F4, F3, F2, F1, F0, ...]
+  memmove: 丢掉 F5/F4/F3，从 F2 开始
+  修正后: far_history = [F2, F1, F0, 0, 0, 0, ...]
+
+  此时 far[0] = F2（3帧前的），near 也要用 3帧前的
+  → lookahead += 3，取 near_history[3] = N_(T-3)
+  → N_(T-3) 和 F2 是同一时刻，对齐关系恢复 ✓
+</div>
+
+<h3>2.5 关键等式</h3>
+<div class="key">
+<code>lookahead = -signal_delay_correction</code>（初始 lookahead=0 时成立）<br>
+因此 <code>mf_abs - lookahead = mf_abs - |已修正量| = 剩余需修正量</code>
+</div>
+
+<h2>3. MF 集成方案演进与问题</h2>
+
+<h3>3.1 方案A（失败）：MF残余 + 减lookahead = 双重减法</h3>
+<div class="problem">
+<strong>代码</strong>：<code>last_delay = mf_abs - |signal_delay_correction|</code>，然后 <code>delay = last_delay - lookahead</code><br>
+<strong>问题</strong>：等于减了两次已修正量（correction ≈ lookahead），得出极小或负值触发反向修正<br>
+<strong>日志表现</strong>：<code>last_delay=6 delay=-104 corr=+105</code> 然后 <code>last_delay=111 delay=106 corr=-105</code> 交替震荡
+</div>
+
+<h3>3.2 方案B（失败）：方案A + Snapshot 防帧内变化</h3>
+<div class="problem">
+<strong>思路</strong>：帧开始快照 signal_delay_correction，帧内两次 sub-frame 用同一值<br>
+<strong>问题</strong>：帧内不震荡了，但跨帧仍然震荡（帧N修正改变correction，帧N+1 snapshot不同）<br>
+<strong>根因</strong>：本质仍是双重减法
+</div>
+
+<h3>3.3 最终方案（两种等价模式）</h3>
+<div class="solution">
+<strong>RAW 模式</strong>（<code>#define MF_DELAY_RAW_ABSOLUTE</code>）：<br>
+<code>last_delay = mf_abs</code>，<code>delay = last_delay - lookahead</code><br>
+只减一次（靠 lookahead）
+
+<br><br>
+<strong>Residual 模式</strong>（默认）：<br>
+<code>last_delay = mf_abs - |snapshot|</code>，<code>delay = last_delay</code>（MF不减lookahead）<br>
+只减一次（靠 snapshot/correction）
+
+<br><br>
+<strong>数学等价</strong>：两者最终 <code>delay = mf_abs - 已修正量</code>，只是"已修正量"的来源不同（lookahead vs signal_delay_correction）。
+</div>
+
+<h2>4. 为什么每次修正后要 SoftReset Buffer</h2>
+
+<div class="key">
+<strong>目的</strong>：保持 Binary 延时估计器的坐标系与 far_buf 物理状态一致。
+</div>
+
+<p>当 <code>MoveFarReadPtr</code> 移动了 far_buf 读指针后，Binary 内部的 <code>far_history</code> 如果不做对应移动，下一帧搜索会在错误的位置找匹配，导致延时估计跳变。</p>
+
+<table>
+<tr><th>操作</th><th>SoftReset Far 侧</th><th>SoftReset Near 侧</th><th>效果</th></tr>
+<tr><td>Far 回退 N blocks</td><td>memmove far_history 右移 N，前面 pad 0</td><td>lookahead += N</td><td>far/near 坐标同步后退</td></tr>
+<tr><td>Far 前移 N blocks</td><td>memmove far_history 左移 N，后面 pad 0</td><td>lookahead -= N</td><td>far/near 坐标同步前进</td></tr>
+</table>
+
+<h2>5. SoftReset 详解：为什么修正后必须同步 Binary 内部状态</h2>
+
+<h3>5.1 调用时机</h3>
+<pre>
+// aec_core.c — EvzAec_ProcessFrames
+int move_elements = SignalBasedDelayCorrection(aec);
+int moved_elements = MoveFarReadPtrWithoutSystemDelayUpdate(aec, move_elements);
+// ↓↓↓ 修正 far_buf 后，必须同步 Binary 内部状态 ↓↓↓
+Evz_SoftResetDelayEstimator(aec->delay_estimator, moved_elements);
+Evz_SoftResetDelayEstimatorFarend(aec->delay_estimator_farend, moved_elements);
+aec->signal_delay_correction += moved_elements;
+</pre>
+
+<h3>5.2 为什么需要执行这两个函数</h3>
+
+<div class="key">
+<strong>核心问题</strong>：<code>MoveFarReadPtr</code> 改变了 far_buf 的物理读取位置。但 Binary 延时估计器内部有自己独立的 <code>far_history</code> 和 <code>near_history</code>，它们的坐标系如果不做对应调整，下一帧搜索会在错误位置匹配，产生延时估计跳变。
+</div>
+
+<h3>5.3 Evz_SoftResetDelayEstimatorFarend — 调整 far 侧坐标</h3>
+
+<p><strong>函数调用链</strong>：<code>Evz_SoftResetDelayEstimatorFarend → Evz_SoftResetBinaryDelayEstimatorFarend</code></p>
+
+<pre>
+void Evz_SoftResetBinaryDelayEstimatorFarend(self, delay_shift) {
+    // delay_shift = moved_elements（正=前移，负=回退）
+    if (delay_shift > 0) {
+        // Far 前移：丢掉最老的 delay_shift 个，最新的不变
+        dest_index = delay_shift;  // 右移
+        memmove(&far_history[dest_index], &far_history[0], shift_size);
+        memset(&far_history[0], 0, delay_shift);  // 前面补零
+    } else if (delay_shift < 0) {
+        // Far 回退：丢掉最新的 |shift| 个，从老的开始
+        src_index = |delay_shift|;
+        memmove(&far_history[0], &far_history[src_index], shift_size);
+        memset(&far_history[shift_size], 0, |delay_shift|);  // 后面补零
+    }
+}
+</pre>
+
+<div class="diagram">
+场景：moved_elements = -47（far_buf 回退 47 blocks）
+
+修正前 far_history（Binary 内部）:
+  [F_now, F_now-1, ..., F_now-46, F_now-47, ..., F_now-499]
+   [0]    [1]            [46]      [47]           [499]
+
+MoveFarReadPtr 把 far_buf 读指针后退了 47 → 自适应滤波器现在从 F_now-47 开始读
+但 far_history[0] 还是 F_now → 坐标不一致！
+
+SoftResetFarend(delay_shift=-47):
+  src_index = 47
+  memmove: far_history[0..452] = far_history[47..499]
+  memset:  far_history[453..499] = 0
+
+修正后 far_history:
+  [F_now-47, F_now-48, ..., F_now-499, 0, 0, ..., 0]
+   [0]       [1]             [452]     [453]     [499]
+
+现在 far_history[0] = F_now-47，和 far_buf 读指针对齐 ✓
+Binary 下次搜索在正确坐标系下进行
+</div>
+
+<h3>5.4 Evz_SoftResetDelayEstimator — 调整 near 侧坐标 (lookahead)</h3>
+
+<p><strong>函数调用链</strong>：<code>Evz_SoftResetDelayEstimator → Evz_SoftResetBinaryDelayEstimator</code></p>
+
+<pre>
+int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
+    int old_lookahead = self->lookahead;
+    self->lookahead -= delay_shift;
+    clamp to [0, near_history_size - 1];
+    return old_lookahead - self->lookahead;  // 实际调整量
+}
+</pre>
+
+<div class="key">
+<strong>为什么 near 侧也要调整</strong>：far_history 被移动后，如果 near 还用"当前帧"做比较，时间对应关系就错了。通过调整 lookahead，让 Binary 取 near_history 中对应时刻的 near spectrum，保持 far/near 时间对齐。
+</div>
+
+<div class="diagram">
+场景：moved_elements = -47（far 回退），lookahead: 0 → 47
+
+修正前：
+  far_history[0] = F_now,  near 用的是 N_now (lookahead=0)
+  → F_now 和 N_now 是同一时刻 ✓
+
+修正后（far_history 被移动）:
+  far_history[0] = F_now-47,  如果 near 还用 N_now (lookahead=0)
+  → F_now-47 和 N_now 差了 47 帧！✗
+
+调整 lookahead = 47:
+  near 改用 near_history[47] = N_now-47
+  → F_now-47 和 N_now-47 是同一时刻 ✓ 对齐恢复
+</div>
+
+<h3>5.5 如果不执行 SoftReset 会怎样</h3>
+
+<table>
+<tr><th>不执行的后果</th><th>表现</th></tr>
+<tr><td>不执行 SoftResetFarend</td><td>far_history 坐标和 far_buf 物理位置不一致，Binary 搜索到的 last_delay 会突变（跳到错误位置），可能触发不必要的二次修正或来回震荡</td></tr>
+<tr><td>不执行 SoftResetDelayEstimator</td><td>lookahead 不变，near/far 时间错位，Binary 输出的 last_delay 包含了不正确的偏移，减去 lookahead 后得到错误残余值</td></tr>
+<tr><td>两者都不执行</td><td>Binary 完全失去跟踪能力，持续输出错误延时，SignalBasedDelayCorrection 反复修正导致系统不稳定</td></tr>
+</table>
+
+<h3>5.6 对 MF 的影响</h3>
+<p>MF 延时估计器有自己独立的 far/near 数据流（通过 mf_far_fifo），不受 Binary 的 SoftReset 影响。MF 始终输出绝对延时。但 SoftReset 改变了 <code>lookahead</code> 值，在 RAW 模式下 <code>delay = mf_abs - lookahead</code>，lookahead 的变化正好反映了系统已修正的量，使 MF 输出能正确转换为残余延时。</p>
+
+<h2>6. MF/Binary 切换安全性</h2>
+
+<p>当 MF confidence 波动导致帧间 MF↔Binary 切换时：</p>
+<ul>
+<li>Binary 的 <code>last_delay</code> 是在 SoftReset 后坐标系下搜索的结果，减去 lookahead 得到真实残余</li>
+<li>MF 的 <code>mf_abs - lookahead</code> 也得到真实残余</li>
+<li>两者最终 <code>delay</code> 值相近（都是真实残余），切换不会引起跳变</li>
+</ul>
+
+<h2>7. 调试中遇到的关键问题总结</h2>
+
+<table>
+<tr><th>#</th><th>问题</th><th>根因</th><th>解决</th></tr>
+<tr><td>1</td><td>MF 绝对延时过修正（118+85=203 远超120）</td><td>MF 不感知 far_buf 已移动，绝对值直接当 correction 用</td><td>改为残余模式：mf_abs - 已修正量</td></tr>
+<tr><td>2</td><td>帧内震荡（corr=-105/+105交替）</td><td>48kHz分两次 sub-frame 调 ProcessFrames，第一次修正改变 signal_delay_correction 影响第二次计算</td><td>Snapshot 快照帧开始值</td></tr>
+<tr><td>3</td><td>跨帧震荡（snapshot 方案）</td><td>双重减法：先减 correction 得残余，又减 lookahead（≈correction）再减一次</td><td>只减一次：RAW 用 lookahead / Residual 不减 lookahead</td></tr>
+<tr><td>4</td><td>lookahead 累计到 47/113 导致 delay 为负</td><td>每次负修正 lookahead 增加，如果 MF 路径不考虑 lookahead 就会被减成负数</td><td>RAW 模式：mf_abs - lookahead 天然处理；Residual 模式有 clamp 保护</td></tr>
+<tr><td>5</td><td>MF 帧间波动(117→111)导致 delay=-2</td><td>RAW 模式短暂 mf_abs < lookahead</td><td>正修正自修复：moved=+3 → lookahead-=3 → 下帧 delay=1 回到 safe range</td></tr>
+</table>
+
+<h2>8. 当前代码结构（宏控制）</h2>
+
+<pre>
+// aec_core_internal.h
+#define AEC_ENHANCED_DELAY_EST          // 总开关
+// #define MF_DELAY_RAW_ABSOLUTE        // 取消注释=RAW模式，注释=Residual模式
+
+// aec_core.c — SignalBasedDelayCorrection
+#ifdef AEC_ENHANCED_DELAY_EST
+  if (mf_fused_delay_blocks > 0 && mf_fused_confidence >= 0.8f) {
+    #ifdef MF_DELAY_RAW_ABSOLUTE
+      last_delay = mf_fused_delay_blocks;           // 直接用绝对值
+    #else
+      last_delay = mf_fused_delay_blocks - |snapshot|; // 减已修正量
+      if (last_delay < 0) last_delay = 0;
+    #endif
+    mf_is_source = 1;
+  } else {
+    last_delay = Evz_last_delay(delay_estimator);   // Binary fallback
+  }
+
+  #ifdef MF_DELAY_RAW_ABSOLUTE
+    delay = last_delay - lookahead;                 // 统一减 lookahead
+  #else
+    delay = mf_is_source ? last_delay : (last_delay - lookahead);
+  #endif
+#endif
+</pre>
+
+<h2>9. 关键参数</h2>
+<table>
+<tr><th>参数</th><th>值</th><th>说明</th></tr>
+<tr><td>kLookaheadBlocks</td><td>0</td><td>初始 lookahead（系统运行中被 SoftReset 动态修改）</td></tr>
+<tr><td>kHistorySizeBlocks</td><td>500</td><td>far_history 长度，也是 near_history_size 和 max_lookahead</td></tr>
+<tr><td>upper_bound</td><td>num_partitions × 3/4 = 33</td><td>delay > 33 触发负修正</td></tr>
+<tr><td>lower_bound</td><td>0</td><td>delay ≤ 0 触发正修正</td></tr>
+<tr><td>MF confidence 门限</td><td>0.8</td><td>≥0.8 使用 MF，<0.8 fallback Binary</td></tr>
+<tr><td>Quality 门限放松</td><td>confidence > 0.3</td><td>MF 有一定信心即可放松 Binary 的 quality 要求</td></tr>
+</table>
+
+<h2>10. 验证方法</h2>
+<ol>
+<li>启用 <code>[CORR_ACT]</code> 日志观察每次修正的 last_delay/delay/corr/lookahead/src</li>
+<li>确认修正后 <code>delay</code> 落入 [1, upper_bound] 不再触发</li>
+<li>确认 <code>total_corr + delayIdx ≈ 真实延时 blocks</code></li>
+<li>确认 <code>converged=1</code> 后输出音频回声消除生效</li>
+</ol>
+
+<h2>11. 附件：参考资料</h2>
+<p>📎 <a href="AEC_Kalman_C.zip" download>AEC_Kalman_C.zip</a> — AEC Kalman C 实现参考代码包（点击下载）</p>
+
+</body>
+</html>

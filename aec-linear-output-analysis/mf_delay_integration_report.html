@@ -272,7 +272,128 @@ int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
 <h3>5.6 对 MF 的影响</h3>
 <p>MF 延时估计器有自己独立的 far/near 数据流（通过 mf_far_fifo），不受 Binary 的 SoftReset 影响。MF 始终输出绝对延时。但 SoftReset 改变了 <code>lookahead</code> 值，在 RAW 模式下 <code>delay = mf_abs - lookahead</code>，lookahead 的变化正好反映了系统已修正的量，使 MF 输出能正确转换为残余延时。</p>
 
-<h2>6. MF/Binary 切换安全性</h2>
+<h2>6. Binary 延时估计完整数据链路</h2>
+
+<h3>6.1 端到端数据流（8层）</h3>
+<div class="diagram">
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 第1层：外部音频进入 AEC                                                  │
+│  远端 farend[64] → BufferFarendPartition()                              │
+│  近端 nearend[64] → ProcessBlock()                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 第2层：时域 → 频域 (FFT)                                                │
+│  far[64] → FFT → far_spectrum[PART_LEN1] (功率谱)                       │
+│  near[64] → FFT → near_spectrum[PART_LEN1]                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 第3层：频谱 → 二值化 (BinarySpectrumFloat)                              │
+│  对每个频带 [17..48] (32个):                                             │
+│    更新 threshold[i] (指数平滑均值)                                      │
+│    spectrum[i] > threshold[i] → 置位第(i-17)位                          │
+│  输出: uint32_t binary_spectrum (32-bit 二值向量)                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 第4层：存入 History FIFO                                                 │
+│  Far: binary_far_history[] 右移, [0]=当前  (500 entries)                 │
+│  Near: binary_near_history[] 右移, [0]=当前 (501 entries)                │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 第5层：Hamming Distance 比较 (BitCountComparison)                        │
+│  near_bin = near_history[lookahead]                                      │
+│  for i in 0..500: bit_counts[i] = popcount(near_bin XOR far_history[i]) │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 第6层：指数平滑 → mean_bit_counts[i]                                    │
+│  mean_bit_counts[i] += (bit_counts[i] - mean_bit_counts[i]) >> shifts   │
+│  真实延时位置: 值最低(~5-8)，其他位置较高(~15-20)                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 第7层：搜索最小值 → 验证 → last_delay                                   │
+│  candidate = argmin(mean_bit_counts)                                     │
+│  验证(valley深度 + histogram + hits) → last_delay = candidate           │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 第8层：last_delay → 修正 → SoftReset                                    │
+│  delay = last_delay - lookahead                                          │
+│  if delay > upper(33) → 负修正(far回退)                                  │
+│  if delay ≤ 0 → 正修正(far前移)                                         │
+│  SoftResetFarend: memmove far_history                                    │
+│  SoftResetEstimator: 调整 lookahead                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+</div>
+
+<h3>6.2 last_delay 在不同状态下的值</h3>
+
+<p>一个常见疑问：之前说 <code>last_delay = L + D</code>，SoftReset 后又变成 <code>last_delay = D</code>，是否矛盾？</p>
+
+<div class="key">
+不矛盾。两者是同一公式在不同 far_history 坐标系下的正确结果。<br>
+关键区别：<strong>far_history 的"起点时间"不同了</strong>。SoftReset memmove 把坐标原点从 T 移到了 T-3。<br>
+<code>delay = last_delay - lookahead</code> 始终输出正确的残余延时。
+</div>
+
+<h4>场景 1：初始状态，无修正，lookahead=L</h4>
+<div class="diagram">
+far_history 没被移动过，[0]=F_T (最新)
+
+near 用的是 N_T-L (lookahead=L)
+N_T-L 的回声来自 F_(T-L-D)
+F_(T-L-D) 在 far_history 中位置 = T - (T-L-D) = L+D
+
+last_delay = L+D
+delay = last_delay - lookahead = (L+D) - L = D  ← 真实延时（全部）
+</div>
+
+<h4>场景 2：SoftReset 后，far_history 移动了 3 位，lookahead=3</h4>
+<div class="diagram">
+far_history 被 memmove 过，[0]=F_T-3（不再是最新，坐标原点=T-3）
+
+near 用的是 N_T-3 (lookahead=3)
+N_T-3 的回声来自 F_(T-3-D)
+F_(T-3-D) 在新 far_history 中位置:
+  新起点时间 = T-3
+  F_(T-3-D) 相对起点偏移 = (T-3) - (T-3-D) = D
+
+last_delay = D
+delay = last_delay - lookahead = D - 3  ← 残余延时（减去已修正的3）
+</div>
+
+<h4>对比总结</h4>
+<table>
+<tr><th>状态</th><th>far_history[0]起点</th><th>near 使用</th><th>last_delay</th><th>lookahead</th><th>delay</th><th>含义</th></tr>
+<tr><td>初始(未修正)</td><td>F_T</td><td>N_T-L</td><td>L+D</td><td>L</td><td>D</td><td>全部延时</td></tr>
+<tr><td>修正3后</td><td>F_T-3</td><td>N_T-3</td><td>D</td><td>3</td><td>D-3</td><td>剩余延时</td></tr>
+</table>
+
+<p><code>last_delay</code> 的绝对值随 SoftReset 变化（坐标系变了），<code>lookahead</code> 也随之变化，两者的差 <code>delay = last_delay - lookahead</code> 始终给出正确的"还需修正多少"。</p>
+
+<h3>6.3 SoftReset 数据变化详解</h3>
+
+<h4>SoftResetFarend (delay_shift=-85, far 回退)</h4>
+<div class="diagram">
+binary_far_history 修改前:
+  [0]=F_T  [1]=F_T-1  ...  [84]=F_T-84  [85]=F_T-85  ...  [499]=F_T-499
+
+操作: memmove([0], [85], 415) + memset([415], 0, 85)
+
+binary_far_history 修改后:
+  [0]=F_T-85  [1]=F_T-86  ...  [414]=F_T-499  [415..499]=0
+
+效果: 丢掉最新85帧，[0]对齐到 F_T-85 (和 far_buf 物理回退一致)
+</div>
+
+<h4>SoftResetEstimator (delay_shift=-85)</h4>
+<div class="diagram">
+binary_near_history 数据不变:
+  [0]=N_T  [1]=N_T-1  ...  [85]=N_T-85  ...  [500]=N_T-500
+
+lookahead: 0 → 85
+
+效果: 下次比较取 near_history[85]=N_T-85
+      与 far_history[0]=F_T-85 时间对齐 ✓
+</div>
+
+<h4>为什么 far 必须 memmove 而 near 只改 lookahead</h4>
+<div class="key">
+<strong>far_history</strong>：BitCountComparison 遍历 far_history[0..499] 全部位置做比较，没有"从某offset开始"的参数。如果不 memmove，位置 0 的数据仍是 F_T，搜索结果在错误坐标。<br><br>
+<strong>near_history</strong>：ProcessBinarySpectrum 中通过 <code>binary_near_spectrum = near_history[lookahead]</code> 取值，只用一个元素。改 lookahead 就等于改了"用哪个 near"，不需要动数组。
+</div>
+
+<h2>7. MF/Binary 切换安全性</h2>
 
 <p>当 MF confidence 波动导致帧间 MF↔Binary 切换时：</p>
 <ul>
@@ -281,7 +402,7 @@ int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
 <li>两者最终 <code>delay</code> 值相近（都是真实残余），切换不会引起跳变</li>
 </ul>
 
-<h2>7. 调试中遇到的关键问题总结</h2>
+<h2>8. 调试中遇到的关键问题总结</h2>
 
 <table>
 <tr><th>#</th><th>问题</th><th>根因</th><th>解决</th></tr>
@@ -292,7 +413,7 @@ int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
 <tr><td>5</td><td>MF 帧间波动(117→111)导致 delay=-2</td><td>RAW 模式短暂 mf_abs < lookahead</td><td>正修正自修复：moved=+3 → lookahead-=3 → 下帧 delay=1 回到 safe range</td></tr>
 </table>
 
-<h2>8. 当前代码结构（宏控制）</h2>
+<h2>9. 当前代码结构（宏控制）</h2>
 
 <pre>
 // aec_core_internal.h
@@ -321,7 +442,7 @@ int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
 #endif
 </pre>
 
-<h2>9. 关键参数</h2>
+<h2>10. 关键参数</h2>
 <table>
 <tr><th>参数</th><th>值</th><th>说明</th></tr>
 <tr><td>kLookaheadBlocks</td><td>0</td><td>初始 lookahead（系统运行中被 SoftReset 动态修改）</td></tr>
@@ -332,7 +453,7 @@ int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
 <tr><td>Quality 门限放松</td><td>confidence > 0.3</td><td>MF 有一定信心即可放松 Binary 的 quality 要求</td></tr>
 </table>
 
-<h2>10. 验证方法</h2>
+<h2>11. 验证方法</h2>
 <ol>
 <li>启用 <code>[CORR_ACT]</code> 日志观察每次修正的 last_delay/delay/corr/lookahead/src</li>
 <li>确认修正后 <code>delay</code> 落入 [1, upper_bound] 不再触发</li>
@@ -340,7 +461,7 @@ int Evz_SoftResetBinaryDelayEstimator(self, delay_shift) {
 <li>确认 <code>converged=1</code> 后输出音频回声消除生效</li>
 </ol>
 
-<h2>11. 附件：参考资料</h2>
+<h2>12. 附件：参考资料</h2>
 <p>📎 <a href="AEC_Kalman_C.zip" download>AEC_Kalman_C.zip</a> — AEC Kalman C 实现参考代码包（点击下载）</p>
 
 </body>

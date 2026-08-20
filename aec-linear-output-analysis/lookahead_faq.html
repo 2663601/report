@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AEC Binary Lookahead 深度 Q&A</title>
+<style>
+body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { border-bottom: 3px solid #2c3e50; padding-bottom: 10px; }
+h2 { color: #2c3e50; margin-top: 40px; }
+.question { background: #e8f4fd; border-left: 4px solid #2196F3; padding: 12px 16px; margin: 20px 0 10px 0; font-weight: bold; }
+.answer { margin: 0 0 30px 0; }
+pre { background: #1e1e1e; color: #d4d4d4; padding: 14px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.4; }
+.key { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px 14px; margin: 12px 0; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+th, td { border: 1px solid #dee2e6; padding: 8px 12px; text-align: left; }
+th { background: #e9ecef; }
+</style>
+</head>
+<body>
+
+<h1>AEC Binary Lookahead 深度 Q&A</h1>
+<p>基于 MF 延时估计集成 AEC 调试过程中的核心问题和答案整理。</p>
+
+<h2>1. Lookahead 的基本含义</h2>
+
+<div class="question">Q: Binary 中的 lookahead 是什么? 为什么叫"前瞻"?</div>
+<div class="answer">
+<p>lookahead 是 Binary 延时估计器中 near_history 的读取偏移。Binary 不用当前帧的 near，而是用 <code>near_history[lookahead]</code>（即 lookahead 帧之前的 near）做比较。</p>
+<p>叫"前瞻"是因为从 far 的视角看：far_history 比实际使用的 near 多积累了 lookahead 帧数据，相当于 far "提前看到了未来"。但实际上是 near 被延迟使用了。</p>
+</div>
+
+<div class="question">Q: 初始 lookahead 是多少? 什么时候会变?</div>
+<div class="answer">
+<p>你的系统中 <code>kLookaheadBlocks = 0</code>，初始时 Binary 直接用当前帧。lookahead 变为非零完全是 SoftReset 的副作用——每次 far_buf 回退修正时 <code>lookahead -= negative_moved</code> 导致 lookahead 增加。</p>
+</div>
+
+<h2>2. 为什么 Binary 输出要减 Lookahead</h2>
+
+<div class="question">Q: SoftReset 后 Binary 的 far_history 已经对齐了 far_buf，输出不应该直接就是残余延时吗?</div>
+<div class="answer">
+<p><strong>不是。</strong>因为 SoftReset 同时调整了 lookahead，让 Binary 用的是旧 near 而非当前帧。</p>
+
+<p>具体例子（真实延时 D=120，已修正 85）：</p>
+<pre>
+SoftReset 后:
+  far_history[0] = F_(T-85)     (起点对齐 far_buf)
+  lookahead = 85                (near 用 N_T-85)
+
+Binary 比较 N_T-85 和 far_history:
+  N_T-85 的回声来自 F_(T-85-120) = F_(T-205)
+  F_(T-205) 在 far_history 中位置:
+    far_history[k] = F_(T-85-k)
+    T-85-k = T-205 -> k = 120
+
+  last_delay = 120
+
+delay = last_delay - lookahead = 120 - 85 = 35 (真实残余)
+</pre>
+
+<div class="key">
+Binary 因为用了 lookahead 帧前的 near 做比较，搜索结果天然比真实残余多了 lookahead 偏移。减去 lookahead 是去掉"near 被延迟使用"的虚假偏移。
+</div>
+</div>
+
+<div class="question">Q: 如果 SoftReset 不动 lookahead（保持 0），Binary 输出会怎样?</div>
+<div class="answer">
+<pre>
+只做 SoftResetFarend，不做 SoftResetEstimator:
+  far_history[0] = F_(T-85)
+  near 用 N_T (lookahead=0, 当前帧)
+
+  N_T 的回声来自 F_(T-120)
+  F_(T-120) 在 far_history 中: T-85-k = T-120 -> k = 35
+  
+  last_delay = 35 = 直接就是残余! 不需要减!
+</pre>
+<p>数值上确实直接是残余。但问题在于 far_history[0]=F_(T-85) 和 near=N_T 时间差了 85 帧，导致 mean_bit_counts 平滑过渡期不稳定。</p>
+</div>
+
+<h2>3. 为什么 WebRTC 选择动 Lookahead</h2>
+
+<div class="question">Q: 既然不动 lookahead 输出也是对的，为什么还要动?</div>
+<div class="answer">
+<p>为了 <strong>mean_bit_counts 统计连续性</strong>。</p>
+
+<table>
+<tr><th>方案</th><th>last_delay 含义</th><th>平滑稳定性</th><th>需要减 lookahead</th></tr>
+<tr><td>只动 far, 不动 near</td><td>直接是残余</td><td>差（过渡期 far/near 时间错位）</td><td>不需要</td></tr>
+<tr><td>far + near 都动</td><td>残余 + lookahead</td><td>好（坐标一致,统计不失效）</td><td>需要</td></tr>
+</table>
+
+<p>如果不动 near：</p>
+<ul>
+<li>far_history[0] = F_(T-85)，near = N_T → 时间差 85 帧</li>
+<li>Hamming distance 在真实位置虽然数值正确，但 mean_bit_counts 是长期平滑结果</li>
+<li>突然 far 坐标变了但 near 没变，已积累的 mean_bit_counts 统计值瞬间失效</li>
+<li>需要重新积累（和不做 SoftReset 一样慢）</li>
+</ul>
+
+<p>动了 lookahead 后：</p>
+<ul>
+<li>far_history[0] = F_(T-85), near = N_(T-85) → 同一时刻，对齐</li>
+<li>已积累的 mean_bit_counts 统计值继续有效（物理对应关系没变）</li>
+<li>只需要几十帧微调就能稳定</li>
+</ul>
+
+<div class="key">
+WebRTC 牺牲一次减法运算（<code>delay = last_delay - lookahead</code>），换取 mean_bit_counts 长期积累的统计信息不被修正破坏。
+</div>
+</div>
+
+<h2>4. Lookahead 与 MF 的关系</h2>
+
+<div class="question">Q: MF 的绝对延时为什么也要减 lookahead（RAW 模式）?</div>
+<div class="answer">
+<p>因为 <code>lookahead = -signal_delay_correction = |已修正总量|</code>。</p>
+<pre>
+MF 绝对延时 - lookahead 
+= MF 绝对延时 - |已修正量| 
+= 残余延时
+</pre>
+<p>这和 Binary 的 <code>last_delay - lookahead = 残余延时</code> 数学等价。两种源通过同一公式输出统一语义，实现无缝切换。</p>
+</div>
+
+<div class="question">Q: 为什么 lookahead 等于已修正量?</div>
+<div class="answer">
+<pre>
+初始: lookahead = 0, signal_delay_correction = 0
+
+每次修正: moved_elements (通常为负,如 -85)
+  signal_delay_correction += moved_elements → -85
+  SoftReset: lookahead -= moved_elements → 0-(-85) = 85
+
+所以: lookahead = -signal_delay_correction = |已修正量| = 85
+</pre>
+</div>
+
+<h2>5. 为什么不对 near_history 做 memmove</h2>
+
+<div class="question">Q: far_history 用 memmove，为什么 near_history 不用 memmove 而是改 lookahead?</div>
+<div class="answer">
+<p>两个原因：</p>
+<ol>
+<li><strong>near_history 每帧都在写入</strong>：ProcessBinarySpectrum 开头做 <code>memmove + insert</code> 把当前 near 写入 [0]。如果额外 memmove 移位会和正常写入逻辑冲突。</li>
+<li><strong>far_history 只被读取不被写入</strong>（新 far 数据从另一个路径 AddBinaryFarSpectrum 插入 [0]）。far_history 的 memmove 不影响正常数据流。</li>
+</ol>
+<p>用 lookahead 改读取位置是最简洁的方式——不动数据，只动指针。</p>
+</div>
+
+<h2>6. SoftReset 后 Binary 是否需要重收敛</h2>
+
+<div class="question">Q: SoftReset memmove far_history 后，mean_bit_counts 不也失效了吗?</div>
+<div class="answer">
+<p>SoftReset <strong>不移动 mean_bit_counts</strong>！只移动了 far_history 和 far_bit_counts。</p>
+<p>这意味着位置关系变了但平滑统计没跟着变。真实延时位置的 mean_bit_counts 需要重新下降。但因为：</p>
+<ul>
+<li>far_history 物理数据已在正确位置 → 每帧的新 bit_counts 立刻反映真实匹配</li>
+<li>mean_bit_counts 虽然还是旧值，但几十帧后就被新的 bit_counts 拉低</li>
+</ul>
+<p>所以 SoftReset 的效果是"加速重收敛"（~10-30帧）而非"瞬间收敛"。比不做 SoftReset（需要几千帧）快得多。</p>
+</div>
+
+<h2>7. 数值验证</h2>
+
+<div class="question">Q: 用实际日志验证: lookahead=35, last_delay=291, delay=256 是否正确?</div>
+<div class="answer">
+<pre>
+日志: sig_corr=-35, lookahead=35, mf_abs=291
+
+已修正量 = |-35| = 35 blocks
+lookahead = 35 ✓ (等于已修正量)
+
+RAW 模式: delay = mf_abs - lookahead = 291 - 35 = 256
+含义: 真实延时 291, 已修正 35, 还需修正 256
+
+验证: 256 > upper_bound(33) → 触发修正 corr=-252 ✓
+</pre>
+</div>
+
+</body>
+</html>
